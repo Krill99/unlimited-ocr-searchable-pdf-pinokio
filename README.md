@@ -127,6 +127,26 @@ https://github.com/baidu/Unlimited-OCR
 └── VERSION
 ```
 
+## Screenshots
+
+### Main OCR Interface
+
+Upload images or PDFs and view OCR results live as they are generated.
+
+![Unlimited OCR main interface](screenshots/main-interface.png)
+
+### Rendered Markdown OCR
+
+OCR output can be viewed as rendered Markdown or switched to the raw Markdown source.
+
+![Rendered Markdown OCR output](screenshots/rendered-markdown.png)
+
+### PDF Output Options
+
+PDF generation is optional. When enabled, users can choose between Searchable Scan and Reconstructed PDF.
+
+![PDF output options](screenshots/pdf-options.png)
+
 ## Privacy and security
 
 After installation, OCR is performed locally. User documents are not intentionally sent to a cloud OCR API. The server binds to `127.0.0.1` and has no authentication, so it should not be exposed directly to a network.
