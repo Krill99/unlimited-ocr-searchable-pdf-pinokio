@@ -9,6 +9,8 @@ A local Pinokio app powered by **Baidu Unlimited-OCR** for OCR'ing images and PD
 - **Local OCR** using `baidu/Unlimited-OCR`.
 - **Live line-by-line output** while each page is being generated.
 - **Rendered Markdown / raw Markdown toggle** in the Web UI.
+- **Inline extracted figures/images** in the rendered OCR view for OCR-detected PDF visual regions.
+- **Math rendering enhancements** including LaTeX `array` / `beginarray` structures and Greek alphabet commands.
 - **PDF generation is opt-in** — OCR text-only is the default workflow.
 - **Searchable Scan** is the default PDF option when PDF generation is enabled.
 - **Reconstructed PDF** alternative with visible text, extracted images/figures, structured tables and common mathematical notation.
@@ -81,7 +83,7 @@ Copy the repository folder into Pinokio's `api` directory, refresh/restart Pinok
 3. If generating a PDF, leave **Searchable Scan** selected or choose **Reconstructed PDF**.
 4. Click **START OCR**.
 5. Watch OCR text appear progressively in the output panel.
-6. Switch between **RENDERED** and **MARKDOWN** at any time.
+6. Switch between **RENDERED** and **MARKDOWN** at any time. In Rendered mode, detected figures are shown inline and supported math/arrays are typeset.
 7. If PDF generation is enabled, download the generated PDF when processing finishes.
 
 You can also enable PDF generation or switch PDF mode after OCR finishes; the cached OCR result can be reused without rerunning recognition.
@@ -127,26 +129,6 @@ https://github.com/baidu/Unlimited-OCR
 └── VERSION
 ```
 
-## Screenshots
-
-### Main OCR Interface
-
-Upload images or PDFs and view OCR results live as they are generated.
-
-![Unlimited OCR main interface](screenshots/main-interface.png)
-
-### Rendered Markdown OCR
-
-OCR output can be viewed as rendered Markdown or switched to the raw Markdown source.
-
-![Rendered Markdown OCR output](screenshots/rendered-markdown.png)
-
-### PDF Output Options
-
-PDF generation is optional. When enabled, users can choose between Searchable Scan and Reconstructed PDF.
-
-![PDF output options](screenshots/pdf-options.png)
-
 ## Privacy and security
 
 After installation, OCR is performed locally. User documents are not intentionally sent to a cloud OCR API. The server binds to `127.0.0.1` and has no authentication, so it should not be exposed directly to a network.
@@ -158,6 +140,7 @@ Temporary uploaded/generated files are stored under `work/`. See [`SECURITY.md`]
 - This launcher currently requires NVIDIA CUDA.
 - Unlimited-OCR's detection boxes are generally layout/block-level; Searchable Scan text selection may therefore be less word-precise than a word-level OCR engine even when search works correctly.
 - Reconstructed PDF cannot recover the exact original font family, kerning or every layout property from a scan.
+- The Web UI renders OCR-detected image/figure regions; a visual region the upstream model does not identify cannot be extracted automatically.
 - Complex or malformed tables/equations may use a readable fallback.
 - OCR accuracy remains dependent on the upstream model and source image quality.
 

@@ -2,6 +2,16 @@
 
 All notable changes to the public release are documented here.
 
+## 1.1.0 — 2026-08-16
+
+### Rendered OCR
+- OCR-detected figures/images from PDF pages are now cropped from the exact raster sent to Unlimited-OCR and displayed inline in the rendered OCR view.
+- Clicking an extracted figure opens the full crop in the local Pinokio Web UI.
+- Added rendering for LaTeX `array` environments, including `\begin{array}...\end{array}` and common `beginarray/endarray` OCR variants.
+- Expanded Greek-letter rendering across inline math, display math and bare OCR Markdown commands.
+- Added support for single-dollar inline math such as `$\alpha + \beta$`.
+- Image regions are cached locally per page so switching between Rendered and Markdown views does not repeatedly recrop the source page.
+
 ## 1.0.0 — 2026-08-16
 
 Initial public/community release.
