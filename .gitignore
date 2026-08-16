@@ -1,0 +1,46 @@
+# Pinokio/runtime environment
+env/
+.venv/
+venv/
+models/
+offload/
+work/
+outputs/
+uploads/
+.cache/
+
+# Model / checkpoint files
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# User documents and generated files
+*.pdf
+*.tmp
+*.part
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local environment files
+.env
+.env.*
+!.env.example
