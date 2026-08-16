@@ -104,6 +104,26 @@ The model is **not downloaded again on every Start**.
 The pinned dependency versions intentionally stay close to Baidu's published Transformers inference stack. See the upstream project for its current reference environment:
 https://github.com/baidu/Unlimited-OCR
 
+## Screenshots
+
+### Main OCR Interface
+
+Upload images or PDFs and view OCR results live as they are generated.
+
+![Unlimited OCR main interface](screenshots/main-interface.png)
+
+### Rendered Markdown OCR
+
+OCR output can be viewed as rendered Markdown or switched to the raw Markdown source.
+
+![Rendered Markdown OCR output](screenshots/rendered-markdown.png)
+
+### PDF Output Options
+
+PDF generation is optional. When enabled, users can choose between Searchable Scan and Reconstructed PDF.
+
+![PDF output options](screenshots/pdf-options.png)
+
 ## Repository layout
 
 ```text
