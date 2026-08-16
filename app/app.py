@@ -17,6 +17,7 @@ from typing import Callable, Iterator, Literal
 import pymupdf as fitz
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from PIL import Image
 from pydantic import BaseModel
 
 try:
@@ -36,7 +37,7 @@ WORK_ROOT = ROOT_DIR / "work"
 WORK_ROOT.mkdir(parents=True, exist_ok=True)
 
 MODEL_NAME = "baidu/Unlimited-OCR"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 MOCK_MODE = os.environ.get("UOCR_MOCK", "0") == "1"
 
 # Simple local registries. IDs, rather than arbitrary paths, are exposed to the browser.
@@ -233,8 +234,10 @@ def pdf_to_images(pdf_path: str, dpi: int = 200) -> list[dict]:
 def _mock_ocr(path: str) -> str:
     """Development smoke-test output. Never enabled by the Pinokio launcher."""
     return (
-        "<|det|>text [80, 90, 920, 150]<|/det|>Unlimited OCR searchable PDF test\n"
-        "<|det|>text [80, 180, 920, 260]<|/det|>This text layer is invisible and searchable."
+        "<|det|>title [80, 70, 920, 130]<|/det|># Unlimited OCR render test\n"
+        "<|det|>text [80, 150, 920, 230]<|/det|>Greek math: \\(\\alpha + \\beta = \\Gamma\\)\n"
+        "<|det|>image [180, 270, 820, 610]<|/det|>\n"
+        "<|det|>formula [180, 660, 820, 840]<|/det|>\\[\\begin{array}{cc}\\alpha & \\beta \\\\ \\gamma & \\Delta\\end{array}\\]"
     )
 
 
@@ -506,6 +509,55 @@ def explode_pdf(req: FileRequest):
             "rotation": record["rotation"],
         })
     return {"pages": pages, "count": len(pages)}
+
+
+@app.get("/api/page_region/{file_id}")
+def page_region(file_id: str, x0: float, y0: float, x1: float, y1: float):
+    """Return a cropped OCR layout region from an uploaded image / rasterized PDF page.
+
+    Unlimited-OCR coordinates are normalized to the 0..999 image space. The crop
+    is generated from the exact raster that was sent to the OCR model, so figures
+    shown in the rendered Markdown view match the model's detected image region.
+    """
+    item = _get_file(file_id)
+    if item.get("kind") not in {"image", "page"}:
+        raise HTTPException(status_code=400, detail="Region preview requires an image or extracted PDF page.")
+
+    vals = [float(x0), float(y0), float(x1), float(y1)]
+    if not all(v == v and abs(v) != float("inf") for v in vals):
+        raise HTTPException(status_code=400, detail="Invalid region coordinates.")
+    x0, y0, x1, y1 = vals
+    x0, x1 = sorted((max(0.0, min(999.0, x0)), max(0.0, min(999.0, x1))))
+    y0, y1 = sorted((max(0.0, min(999.0, y0)), max(0.0, min(999.0, y1))))
+    if x1 - x0 < 1 or y1 - y0 < 1:
+        raise HTTPException(status_code=400, detail="Detected region is too small.")
+
+    # Stable cache name so rerendering Markdown does not repeatedly crop the page.
+    cache_dir = Path(item["path"]).parent / "regions"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = "_".join(str(int(round(v * 10))) for v in (x0, y0, x1, y1))
+    output = cache_dir / f"region_{key}.png"
+
+    if not output.exists():
+        try:
+            with Image.open(item["path"]) as im:
+                im.load()
+                left = max(0, min(im.width - 1, int(round(x0 / 999.0 * im.width))))
+                top = max(0, min(im.height - 1, int(round(y0 / 999.0 * im.height))))
+                right = max(left + 1, min(im.width, int(round(x1 / 999.0 * im.width))))
+                bottom = max(top + 1, min(im.height, int(round(y1 / 999.0 * im.height))))
+                crop = im.crop((left, top, right, bottom))
+                if crop.mode not in {"RGB", "RGBA", "L"}:
+                    crop = crop.convert("RGB")
+                crop.save(output, format="PNG", optimize=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Could not extract image region: {exc}") from exc
+
+    return FileResponse(
+        output,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @app.post("/api/run_ocr")

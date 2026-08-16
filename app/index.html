@@ -137,6 +137,17 @@
     .markdown-body .frac .num { border-bottom:1px solid currentColor; padding:0 .18em .06em; }
     .markdown-body .frac .den { padding:.06em .18em 0; }
     .markdown-body .md-image-placeholder { display:inline-block; color:var(--muted); border:1px dashed var(--border); border-radius:5px; padding:3px 7px; font:10px var(--mono); }
+    .markdown-body .ocr-figure { margin:.9em auto 1.1em; max-width:100%; text-align:center; }
+    .markdown-body .ocr-figure a { display:inline-block; max-width:100%; }
+    .markdown-body .ocr-figure img { display:block; max-width:100%; max-height:520px; width:auto; height:auto; margin:0 auto;
+      object-fit:contain; background:#fff; border:1px solid var(--border); border-radius:6px; box-shadow:0 3px 14px rgba(0,0,0,.24); }
+    .markdown-body .ocr-figure figcaption { margin-top:5px; color:var(--muted); font:9px/1.4 var(--mono); }
+    .markdown-body .math-array { display:inline-table; border-collapse:collapse; vertical-align:middle; margin:.15em .25em;
+      font-family:Cambria Math,"Times New Roman",serif; }
+    .markdown-body .math-array-row { display:table-row; }
+    .markdown-body .math-array-cell { display:table-cell; padding:.08em .45em; text-align:center; white-space:nowrap; }
+    .markdown-body .math-array-row.hline .math-array-cell { border-top:1px solid currentColor; }
+    .markdown-body .math-display .math-array { margin:.15em auto; }
     .placeholder { height:100%; display:grid; place-items:center; color:var(--muted); text-align:center; }
     .placeholder div { line-height:1.8; }
     .page-head { margin:12px 0 6px; color:var(--muted); font:9px var(--mono); border-bottom:1px solid var(--soft);
@@ -385,12 +396,51 @@
     el('start-btn').disabled = false;
   }
 
-  function cleanForDisplay(raw, trimResult=true) {
+  const OCR_VISUAL_TYPES = new Set([
+    'image','figure','fig','photo','picture','illustration','diagram','chart','plot','graph',
+    'logo','barcode','qr','qrcode','stamp','seal','signature'
+  ]);
+
+  function parseDetectionBBox(payload) {
+    const nums = String(payload || '').match(/-?\d+(?:\.\d+)?/g)?.map(Number) || [];
+    const boxes = [];
+    for (let i=0; i+3<nums.length; i+=4) {
+      const [x0,y0,x1,y1] = nums.slice(i,i+4);
+      if ([x0,y0,x1,y1].every(Number.isFinite) && x1 > x0 && y1 > y0) boxes.push([x0,y0,x1,y1]);
+    }
+    if (!boxes.length) return null;
+    return [
+      Math.min(...boxes.map(b=>b[0])), Math.min(...boxes.map(b=>b[1])),
+      Math.max(...boxes.map(b=>b[2])), Math.max(...boxes.map(b=>b[3]))
+    ];
+  }
+
+  function regionMarkdown(pageFileId, type, bbox) {
+    if (!pageFileId || !bbox) return '';
+    const [x0,y0,x1,y1] = bbox.map(v => Math.max(0, Math.min(999, Number(v))));
+    const qs = new URLSearchParams({x0:String(x0), y0:String(y0), x1:String(x1), y1:String(y1)});
+    const url = `/api/page_region/${encodeURIComponent(pageFileId)}?${qs.toString()}`;
+    const label = String(type || 'figure').replace(/[_-]+/g,' ').replace(/\b\w/g, c => c.toUpperCase());
+    return `\n\n![${label}](${url})\n\n`;
+  }
+
+  function displayMarkdownFromRaw(raw, pageFileId=null, trimResult=true) {
     if (!raw) return '';
-    let cleaned = raw
-      .replace(/<\|det\|>\s*[A-Za-z_][\w-]*\s*(?:\[[^\]]*\])?\s*<\|\/det\|>/g, '')
-      .replace(/<\|ref\|>.*?<\|\/ref\|>/gs, '');
+    let cleaned = String(raw).replace(
+      /<\|det\|>\s*([A-Za-z_][\w-]*)\s*([\s\S]*?)\s*<\|\/det\|>/g,
+      (_, type, payload) => {
+        const category = String(type || '').toLowerCase();
+        if (pageFileId && OCR_VISUAL_TYPES.has(category)) {
+          return regionMarkdown(pageFileId, category, parseDetectionBBox(payload));
+        }
+        return '';
+      }
+    ).replace(/<\|ref\|>.*?<\|\/ref\|>/gs, '');
     return trimResult ? cleaned.trim() : cleaned;
+  }
+
+  function cleanForDisplay(raw, trimResult=true) {
+    return displayMarkdownFromRaw(raw, null, trimResult);
   }
 
   function escapeHTML(text) {
@@ -406,27 +456,71 @@
   }
 
   const MATH_SYMBOLS = {
-    alpha:'α', beta:'β', gamma:'γ', delta:'δ', epsilon:'ε', varepsilon:'ε', theta:'θ', lambda:'λ', mu:'μ', nu:'ν',
-    pi:'π', rho:'ρ', sigma:'σ', tau:'τ', phi:'φ', varphi:'φ', chi:'χ', psi:'ψ', omega:'ω',
-    Gamma:'Γ', Delta:'Δ', Theta:'Θ', Lambda:'Λ', Pi:'Π', Sigma:'Σ', Phi:'Φ', Psi:'Ψ', Omega:'Ω',
-    infty:'∞', times:'×', cdot:'·', pm:'±', mp:'∓', leq:'≤', geq:'≥', neq:'≠', approx:'≈', sim:'∼',
-    rightarrow:'→', leftarrow:'←', leftrightarrow:'↔', degree:'°', circ:'°', partial:'∂', nabla:'∇'
+    alpha:'α', beta:'β', gamma:'γ', delta:'δ', epsilon:'ε', varepsilon:'ε', zeta:'ζ', eta:'η', theta:'θ', vartheta:'ϑ',
+    iota:'ι', kappa:'κ', lambda:'λ', mu:'μ', nu:'ν', xi:'ξ', omicron:'ο', pi:'π', varpi:'ϖ', rho:'ρ', varrho:'ϱ',
+    sigma:'σ', varsigma:'ς', tau:'τ', upsilon:'υ', phi:'φ', varphi:'ϕ', chi:'χ', psi:'ψ', omega:'ω',
+    Gamma:'Γ', Delta:'Δ', Theta:'Θ', Lambda:'Λ', Xi:'Ξ', Pi:'Π', Sigma:'Σ', Upsilon:'Υ', Phi:'Φ', Psi:'Ψ', Omega:'Ω',
+    infty:'∞', times:'×', cdot:'·', pm:'±', mp:'∓', leq:'≤', le:'≤', geq:'≥', ge:'≥', neq:'≠', approx:'≈', sim:'∼',
+    propto:'∝', rightarrow:'→', to:'→', leftarrow:'←', leftrightarrow:'↔', degree:'°', circ:'°', partial:'∂', nabla:'∇',
+    sum:'∑', prod:'∏', int:'∫'
   };
 
-  function latexLite(raw) {
+  function normalizeArraySyntax(raw) {
+    return String(raw || '')
+      .replace(/\\?beginarray\b/gi, '\\begin{array}')
+      .replace(/\\?endarray\b/gi, '\\end{array}')
+      .replace(/\\begin\s+array\b/gi, '\\begin{array}')
+      .replace(/\\end\s+array\b/gi, '\\end{array}');
+  }
+
+  function latexLiteCore(raw) {
     let x = escapeHTML(String(raw || '').trim());
-    x = x.replace(/\\(?:text|mathrm|mathbf|mathit)\s*\{([^{}]*)\}/g, '$1');
+    x = x.replace(/\\left\b|\\right\b/g, '');
+    x = x.replace(/\\(?:text|mathrm|mathbf|mathit|operatorname)\s*\{([^{}]*)\}/g, '$1');
     let previous = '';
-    for (let i=0; i<5 && previous !== x; i++) {
+    for (let i=0; i<7 && previous !== x; i++) {
       previous = x;
-      x = x.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '<span class="frac"><span class="num">$1</span><span class="den">$2</span></span>');
+      x = x.replace(/\\(?:d?frac)\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '<span class="frac"><span class="num">$1</span><span class="den">$2</span></span>');
       x = x.replace(/\\sqrt\s*\{([^{}]*)\}/g, '√($1)');
       x = x.replace(/\^\s*\{([^{}]*)\}/g, '<sup>$1</sup>').replace(/_\s*\{([^{}]*)\}/g, '<sub>$1</sub>');
       x = x.replace(/\^([A-Za-z0-9+\-]+)/g, '<sup>$1</sup>').replace(/_([A-Za-z0-9+\-]+)/g, '<sub>$1</sub>');
     }
-    x = x.replace(/\\([A-Za-z]+)/g, (m, name) => MATH_SYMBOLS[name] ?? name);
-    x = x.replace(/\\[,;! ]/g, ' ').replace(/\\_/g, '_').replace(/\\%/g, '%');
+    x = x.replace(/\\([A-Za-z]+)/g, (m, name) => MATH_SYMBOLS[name] ?? m);
+    x = x.replace(/\\[,;:! ]/g, ' ').replace(/\\_/g, '_').replace(/\\%/g, '%').replace(/\\&/g, '&amp;');
+    x = x.replace(/\\(?:displaystyle|textstyle|scriptstyle|scriptscriptstyle)\b/g, '');
     x = x.replace(/[{}]/g, '');
+    return x;
+  }
+
+  function renderLatexArray(spec, body) {
+    let source = String(body || '').trim();
+    source = source.replace(/\\hline/g, '\n@@HLINE@@\n');
+    const rawRows = source.split(/\\\\(?:\[[^\]]*\])?|\r?\n/);
+    const rows = [];
+    let nextHline = false;
+    for (const rawRow of rawRows) {
+      let row = rawRow.trim();
+      if (!row) continue;
+      if (row === '@@HLINE@@') { nextHline = true; continue; }
+      const cells = row.split(/(?<!\\)&/).map(cell => latexLite(cell.replace(/\\&/g,'&').trim()));
+      if (!cells.length) continue;
+      rows.push(`<span class="math-array-row${nextHline ? ' hline' : ''}">${cells.map(c=>`<span class="math-array-cell">${c}</span>`).join('')}</span>`);
+      nextHline = false;
+    }
+    if (!rows.length) return latexLiteCore(source.replace(/@@HLINE@@/g,''));
+    return `<span class="math-array" data-cols="${escapeHTML(spec || '')}">${rows.join('')}</span>`;
+  }
+
+  function latexLite(raw) {
+    let source = normalizeArraySyntax(String(raw || '').trim());
+    const arrays = [];
+    source = source.replace(/\\begin\{array\}\s*(?:\{([^{}]*)\})?([\s\S]*?)\\end\{array\}/g, (_, spec, body) => {
+      const key = `@@ARRAY${arrays.length}@@`;
+      arrays.push({key, html:renderLatexArray(spec || '', body || '')});
+      return key;
+    });
+    let x = latexLiteCore(source);
+    arrays.forEach(item => { x = x.split(item.key).join(item.html); });
     return x;
   }
 
@@ -461,22 +555,38 @@
   function renderInline(text) {
     const codeStash = [];
     const mathStash = [];
-    let x = String(text ?? '');
+    const imageStash = [];
+    let x = normalizeArraySyntax(String(text ?? ''));
 
     x = x.replace(/`([^`]+)`/g, (_, code) => {
       const key = `@@CODE${codeStash.length}@@`; codeStash.push({key, html:`<code>${escapeHTML(code)}</code>`}); return key;
     });
-    x = x.replace(/\\\(([^\n]*?)\\\)/g, (_, math) => {
+    x = x.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+      const key = `@@IMAGE${imageStash.length}@@`;
+      const safe = safeUrl(String(url || '').trim());
+      const label = String(alt || 'Extracted figure').trim();
+      const html = safe === '#'
+        ? `<span class="md-image-placeholder">🖼 ${escapeHTML(label)}</span>`
+        : `<figure class="ocr-figure"><a href="${escapeHTML(safe)}" target="_blank" rel="noopener noreferrer"><img src="${escapeHTML(safe)}" alt="${escapeHTML(label)}" loading="lazy"></a>${label ? `<figcaption>${escapeHTML(label)}</figcaption>` : ''}</figure>`;
+      imageStash.push({key, html}); return key;
+    });
+    x = x.replace(/\\begin\{array\}\s*(?:\{([^{}]*)\})?([\s\S]*?)\\end\{array\}/g, (whole) => {
+      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${latexLite(whole)}</span>`}); return key;
+    });
+    x = x.replace(/\\\(([\s\S]*?)\\\)/g, (_, math) => {
+      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${latexLite(math)}</span>`}); return key;
+    });
+    x = x.replace(/\$([^$\n]+)\$/g, (_, math) => {
       const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${latexLite(math)}</span>`}); return key;
     });
     x = escapeHTML(x);
-    x = x.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt) => `<span class="md-image-placeholder">🖼 ${escapeHTML(alt || 'image')}</span>`);
     x = x.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="${escapeHTML(safeUrl(url))}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    x = x.replace(/\\([A-Za-z]+)/g, (m, name) => MATH_SYMBOLS[name] ?? m);
     x = x.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
     x = x.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
     x = x.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
     x = x.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
-    [...codeStash, ...mathStash].forEach(item => { x = x.split(escapeHTML(item.key)).join(item.html); });
+    [...codeStash, ...mathStash, ...imageStash].forEach(item => { x = x.split(escapeHTML(item.key)).join(item.html); });
     return x;
   }
 
@@ -550,6 +660,7 @@
       }
       if (/^@@HTMLTABLE\d+@@$/.test(t)) { flushParagraph(); closeList(); out.push(t); continue; }
       if (!t) { flushParagraph(); closeList(); continue; }
+      if (/^!\[[^\]]*\]\([^)]+\)$/.test(t)) { flushParagraph(); closeList(); out.push(renderInline(t)); continue; }
 
       const heading=t.match(/^(#{1,6})\s+(.+)$/);
       if (heading) { flushParagraph(); closeList(); const n=heading[1].length; out.push(`<h${n}>${renderInline(heading[2])}</h${n}>`); continue; }
@@ -585,14 +696,15 @@
     return html;
   }
 
-  function renderMarkdownInto(node, markdown) {
+  function renderMarkdownInto(node, markdown, renderedMarkdown=null) {
     node.dataset.markdown = markdown || '';
+    node.dataset.renderedMarkdown = renderedMarkdown == null ? (markdown || '') : renderedMarkdown;
     if (outputView === 'rendered') {
       node.classList.add('markdown-body');
-      node.innerHTML = renderMarkdown(markdown || '');
+      node.innerHTML = renderMarkdown(node.dataset.renderedMarkdown || '');
     } else {
       node.classList.remove('markdown-body');
-      node.textContent = markdown || '';
+      node.textContent = node.dataset.markdown || '';
     }
   }
 
@@ -601,9 +713,9 @@
     el('view-rendered').classList.toggle('active', outputView === 'rendered');
     el('view-markdown').classList.toggle('active', outputView === 'markdown');
     el('output').classList.toggle('rendered', outputView === 'rendered');
-    document.querySelectorAll('#output [data-markdown]').forEach(node => renderMarkdownInto(node, node.dataset.markdown || ''));
+    document.querySelectorAll('#output [data-markdown]').forEach(node => renderMarkdownInto(node, node.dataset.markdown || '', node.dataset.renderedMarkdown || node.dataset.markdown || ''));
     const single = el('output').dataset.singleMarkdown;
-    if (single !== undefined && single !== '') renderSingleOutput(single);
+    if (single !== undefined && single !== '') renderSingleOutput(single, el('output').dataset.singleRenderedMarkdown || single);
   };
 
 
@@ -695,19 +807,17 @@
 
   async function runImage(fileId, prompt, mode) {
     status('running', 'RUNNING OCR…');
-    let liveText = '';
+    let liveRaw = '';
     const raw = await streamOCR(fileId, prompt, mode, (r, meta) => {
       outputText = cleanForDisplay(r);
-      renderSingleOutput(outputText);
+      renderSingleOutput(outputText, displayMarkdownFromRaw(r, fileId));
     }, null, null, delta => {
-      const clean = cleanForDisplay(delta, false);
-      if (!clean) return;
-      liveText += clean;
-      renderSingleOutput(liveText);
+      liveRaw += delta || '';
+      renderSingleOutput(cleanForDisplay(liveRaw, false), displayMarkdownFromRaw(liveRaw, fileId, false));
     });
     if (stopRequested) return stopped();
     outputText = cleanForDisplay(raw);
-    renderSingleOutput(outputText);
+    renderSingleOutput(outputText, displayMarkdownFromRaw(raw, fileId));
     done(outputText);
   }
 
@@ -743,21 +853,22 @@
         body.className = 'ocr-page-body';
         const elapsed = meta?.elapsed_seconds ?? ((performance.now() - pageStarted) / 1000);
         const blocks = meta?.detected_blocks;
-        renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)');
+        renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)', displayMarkdownFromRaw(r, pages[i].file_id) || '(no text detected)');
         head.textContent = `── PAGE ${i+1} / ${pages.length} · ${elapsed.toFixed(1)}s${Number.isFinite(blocks) ? ` · ${blocks} blocks` : ''} ──`;
         out.scrollTop = out.scrollHeight;
-      }, i + 1, pages.length, delta => {
-        const clean = cleanForDisplay(delta, false);
-        if (!clean) return;
-        body.className = 'ocr-page-body';
-        const previous = body.dataset.markdown || '';
-        renderMarkdownInto(body, previous + clean);
-        out.scrollTop = out.scrollHeight;
-      });
+      }, i + 1, pages.length, (() => {
+        let liveRaw = '';
+        return delta => {
+          liveRaw += delta || '';
+          body.className = 'ocr-page-body';
+          renderMarkdownInto(body, cleanForDisplay(liveRaw, false), displayMarkdownFromRaw(liveRaw, pages[i].file_id, false));
+          out.scrollTop = out.scrollHeight;
+        };
+      })());
       pageRawTexts[i] = raw;
       pageCleanTexts[i] = cleanForDisplay(raw);
       body.className = 'ocr-page-body';
-      renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)');
+      renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)', displayMarkdownFromRaw(raw, pages[i].file_id) || '(no text detected)');
       setProgress(Math.max(4, Math.round(((i + 1) / pages.length) * 90)));
     }
 
@@ -851,20 +962,22 @@
     clearOutput(); setProgress(0); status('idle', 'IDLE · upload a PDF or image');
   };
 
-  function renderSingleOutput(text) {
+  function renderSingleOutput(text, renderedText=null) {
     const out = el('output');
     out.dataset.singleMarkdown = text || '';
+    out.dataset.singleRenderedMarkdown = renderedText == null ? (text || '') : renderedText;
     out.classList.toggle('rendered', outputView === 'rendered');
     if (outputView === 'rendered') {
-      out.innerHTML = `<div class="markdown-body">${renderMarkdown(text || '')}</div>`;
+      out.innerHTML = `<div class="markdown-body">${renderMarkdown(out.dataset.singleRenderedMarkdown || '')}</div>`;
     } else {
-      out.textContent = text || '';
+      out.textContent = out.dataset.singleMarkdown || '';
     }
     out.scrollTop = out.scrollHeight;
     el('count-meta').textContent = `${(text || '').length.toLocaleString()} chars`;
   }
   function clearOutput() {
     el('output').dataset.singleMarkdown = '';
+    el('output').dataset.singleRenderedMarkdown = '';
     el('output').classList.toggle('rendered', outputView === 'rendered');
     el('output').innerHTML = '<div class="placeholder"><div>OCR output will appear here line-by-line<br><small>Rendered Markdown is shown by default · PDF generation is optional.</small></div></div>';
     el('output-tag').textContent = 'WAITING'; el('count-meta').textContent = '0 chars';
