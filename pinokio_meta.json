@@ -1,0 +1,21 @@
+{
+  "links": [
+    {
+      "title": "Upstream / Project Links",
+      "links": [
+        {
+          "title": "Baidu Unlimited-OCR GitHub",
+          "value": "https://github.com/baidu/Unlimited-OCR"
+        },
+        {
+          "title": "Unlimited-OCR on Hugging Face",
+          "value": "https://huggingface.co/baidu/Unlimited-OCR"
+        },
+        {
+          "title": "Pinokio",
+          "value": "https://github.com/pinokiocomputer/pinokio"
+        }
+      ]
+    }
+  ]
+}

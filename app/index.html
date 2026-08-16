@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unlimited OCR – Searchable PDF</title>
+  <meta name="description" content="Local Unlimited-OCR interface with live rendered Markdown and optional PDF output." />
+  <style>
+    * { box-sizing:border-box; margin:0; padding:0; }
+    :root {
+      --bg:#0a0c10; --panel:#0f1117; --surface:#161b22; --card:#1c2230;
+      --border:#2a3347; --soft:#1e2635; --accent:#ff6b35; --teal:#00d4aa;
+      --blue:#4a9eff; --red:#ef4444; --text:#e8eaf0; --secondary:#8892a4;
+      --muted:#4a5568; --mono:Consolas,"Cascadia Mono","Courier New",monospace;
+      --ui:Inter,Segoe UI,Arial,sans-serif;
+    }
+    html,body { height:100%; background:var(--bg); color:var(--text); font-family:var(--ui); }
+    body { overflow:hidden; }
+    .app { height:100vh; display:flex; flex-direction:column; }
+    header { height:56px; flex-shrink:0; display:flex; align-items:center; gap:14px; padding:0 18px;
+      background:var(--panel); border-bottom:1px solid var(--border); }
+    .logo { display:flex; align-items:center; gap:10px; font-weight:700; font-size:14px; }
+    .logo-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:7px;
+      background:linear-gradient(135deg,var(--accent),#ff9f5a); color:#111; }
+    .logo span { color:var(--accent); }
+    .sep { width:1px; height:26px; background:var(--border); }
+    .modes { display:flex; padding:3px; border:1px solid var(--border); border-radius:8px; background:var(--bg); }
+    .mode { border:0; color:var(--secondary); background:transparent; padding:5px 13px; border-radius:5px;
+      cursor:pointer; font:500 11px var(--mono); }
+    .mode.active { background:var(--surface); color:var(--text); }
+    .actions { margin-left:auto; display:flex; gap:7px; }
+    button { font-family:var(--mono); }
+    .btn { border:1px solid var(--border); background:var(--surface); color:var(--secondary); padding:7px 12px;
+      border-radius:7px; cursor:pointer; font-size:10px; font-weight:600; letter-spacing:.04em; }
+    .btn:hover:not(:disabled) { border-color:var(--blue); color:var(--text); }
+    .btn:disabled { opacity:.35; cursor:not-allowed; }
+    .btn.primary { background:var(--teal); color:#03120f; border-color:var(--teal); }
+    .btn.stop { background:var(--red); color:white; border-color:var(--red); }
+    .btn.download { background:var(--blue); color:white; border-color:var(--blue); }
+    .statusbar { height:30px; flex-shrink:0; display:flex; align-items:center; gap:10px; padding:0 18px;
+      background:var(--panel); border-bottom:1px solid var(--soft); }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--muted); }
+    .dot.running { background:var(--teal); box-shadow:0 0 9px rgba(0,212,170,.5); }
+    .dot.done { background:var(--teal); }
+    .dot.error { background:var(--red); }
+    #status { color:var(--muted); font:10px var(--mono); }
+    .meta { margin-left:auto; color:var(--muted); font:10px var(--mono); }
+    .meta span { color:var(--secondary); }
+    .progress-wrap { height:2px; flex-shrink:0; background:#07090d; }
+    #progress { height:100%; width:0%; background:linear-gradient(90deg,var(--teal),var(--blue)); transition:width .2s; }
+    .main { min-height:0; flex:1; display:grid; grid-template-columns:1fr 1fr; }
+    .panel { min-width:0; min-height:0; display:flex; flex-direction:column; background:var(--panel); }
+    .panel:first-child { border-right:1px solid var(--border); }
+    .panel-head { height:38px; flex-shrink:0; display:flex; align-items:center; gap:10px; padding:0 14px;
+      background:var(--surface); border-bottom:1px solid var(--soft); }
+    .label { font:600 10px var(--mono); letter-spacing:.09em; color:var(--muted); }
+    .tag { font:500 9px var(--mono); color:var(--accent); border:1px solid rgba(255,107,53,.55); padding:2px 7px;
+      border-radius:4px; background:rgba(255,107,53,.07); }
+    .file-name { margin-left:auto; max-width:55%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+      color:var(--secondary); font:10px var(--mono); }
+    .input-body { min-height:0; flex:1; position:relative; overflow:hidden; background:#0b0e13; }
+    .drop { position:absolute; inset:16px; border:2px dashed var(--border); border-radius:12px; display:flex;
+      flex-direction:column; align-items:center; justify-content:center; gap:12px; cursor:pointer; text-align:center; transition:.2s; }
+    .drop.drag { border-color:var(--accent); background:rgba(255,107,53,.04); }
+    .drop .icon { font-size:42px; opacity:.45; }
+    .drop .title { font-size:15px; color:var(--secondary); }
+    .drop .hint { font:10px var(--mono); color:var(--muted); }
+    .chips { display:flex; gap:6px; }
+    .chip { font:9px var(--mono); color:var(--muted); border:1px solid var(--border); padding:3px 7px; border-radius:4px; }
+    #image-preview { width:100%; height:100%; object-fit:contain; display:none; background:#050505; }
+    #pdf-wrap { display:none; width:100%; height:100%; background:#525659; }
+    #pdf-wrap.visible { display:block; }
+    #pdf-preview { width:100%; height:100%; border:0; background:#525659; }
+    .prompt { height:43px; flex-shrink:0; display:flex; align-items:center; gap:10px; padding:0 14px;
+      background:var(--surface); border-top:1px solid var(--soft); }
+    .prompt label { font:10px var(--mono); color:var(--muted); }
+    .prompt input { flex:1; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);
+      outline:none; padding:6px 9px; font:11px var(--mono); }
+    .prompt input:focus { border-color:var(--accent); }
+    .pdf-output { flex-shrink:0; display:flex; align-items:stretch; gap:8px; padding:9px 14px 11px;
+      background:var(--surface); border-top:1px solid var(--soft); }
+    .pdf-output .output-label { min-width:72px; display:flex; align-items:center; color:var(--muted);
+      font:10px var(--mono); letter-spacing:.04em; }
+    .output-choice { position:relative; flex:1; min-width:0; display:flex; align-items:center; gap:9px;
+      padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--bg); cursor:pointer; user-select:none; }
+    .output-choice:hover { border-color:var(--blue); }
+    .output-choice input { position:absolute; opacity:0; pointer-events:none; }
+    .output-choice .check { width:17px; height:17px; flex:0 0 17px; display:grid; place-items:center;
+      border:1px solid var(--muted); border-radius:4px; color:transparent; font:bold 11px var(--ui); }
+    .output-choice .choice-copy { min-width:0; }
+    .output-choice .choice-title { color:var(--secondary); font:600 10px var(--mono); }
+    .output-choice .choice-sub { margin-top:2px; color:var(--muted); font:8px/1.25 var(--mono); white-space:normal; }
+    .output-choice:has(input:checked) { border-color:var(--blue); background:rgba(74,158,255,.08); }
+    .output-choice:has(input:checked) .check { border-color:var(--blue); background:var(--blue); color:white; }
+    .output-choice:has(input:checked) .choice-title { color:var(--text); }
+    .output-choice.mode-disabled { opacity:.38; pointer-events:none; }
+    .output-choice.generate { flex:.82; border-color:rgba(0,212,170,.35); }
+    .output-choice.generate:has(input:checked) { border-color:var(--teal); background:rgba(0,212,170,.07); }
+    .output-choice.generate:has(input:checked) .check { border-color:var(--teal); background:var(--teal); color:#03120f; }
+    .pdf-output.disabled { opacity:.42; pointer-events:none; }
+    #output { min-height:0; flex:1; overflow:auto; padding:16px 18px; white-space:pre-wrap;
+      font:12px/1.65 var(--mono); color:var(--text); }
+    #output.rendered { white-space:normal; font:13px/1.62 var(--ui); }
+    .view-toggle { margin-left:auto; display:flex; padding:2px; border:1px solid var(--border); border-radius:6px; background:var(--bg); }
+    .view-btn { border:0; border-radius:4px; background:transparent; color:var(--muted); padding:4px 8px;
+      cursor:pointer; font:600 9px var(--mono); letter-spacing:.04em; }
+    .view-btn.active { background:var(--card); color:var(--text); }
+    .markdown-body { color:var(--text); overflow-wrap:anywhere; }
+    .markdown-body > :first-child { margin-top:0 !important; }
+    .markdown-body > :last-child { margin-bottom:0 !important; }
+    .markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4,.markdown-body h5,.markdown-body h6 {
+      color:#f4f6fb; line-height:1.25; margin:1.05em 0 .48em; font-weight:700; }
+    .markdown-body h1 { font-size:1.65em; border-bottom:1px solid var(--border); padding-bottom:.3em; }
+    .markdown-body h2 { font-size:1.4em; border-bottom:1px solid var(--soft); padding-bottom:.25em; }
+    .markdown-body h3 { font-size:1.2em; }
+    .markdown-body h4 { font-size:1.08em; }
+    .markdown-body p { margin:.55em 0; }
+    .markdown-body ul,.markdown-body ol { margin:.55em 0 .7em 1.55em; padding-left:.5em; }
+    .markdown-body li { margin:.22em 0; }
+    .markdown-body blockquote { margin:.8em 0; padding:.45em .85em; border-left:3px solid var(--blue);
+      color:var(--secondary); background:rgba(74,158,255,.05); }
+    .markdown-body hr { border:0; border-top:1px solid var(--border); margin:1em 0; }
+    .markdown-body code { font:11px/1.5 var(--mono); background:#090c11; border:1px solid var(--soft); border-radius:4px; padding:.08em .32em; }
+    .markdown-body pre { margin:.8em 0; padding:10px 12px; overflow:auto; background:#090c11; border:1px solid var(--border); border-radius:7px; }
+    .markdown-body pre code { border:0; padding:0; background:transparent; white-space:pre; }
+    .markdown-body a { color:#7db7ff; text-decoration:none; }
+    .markdown-body a:hover { text-decoration:underline; }
+    .markdown-body table { width:100%; border-collapse:collapse; margin:.8em 0 1em; font-size:.94em; background:#0d1118; }
+    .markdown-body th,.markdown-body td { border:1px solid #39445a; padding:6px 8px; vertical-align:top; text-align:left; }
+    .markdown-body th { background:#182131; color:#f1f5fb; font-weight:700; }
+    .markdown-body tr:nth-child(even) td { background:rgba(255,255,255,.018); }
+    .markdown-body .math-inline { display:inline-block; font-family:Cambria Math,"Times New Roman",serif; color:#f1f4fb;
+      padding:0 .08em; white-space:nowrap; }
+    .markdown-body .math-display { display:block; overflow-x:auto; margin:.8em 0; padding:.55em .7em; text-align:center;
+      font:1.08em/1.7 "Cambria Math","Times New Roman",serif; color:#f1f4fb; background:#0c1017; border:1px solid var(--soft); border-radius:6px; }
+    .markdown-body .frac { display:inline-flex; vertical-align:middle; flex-direction:column; align-items:center; line-height:1.05; margin:0 .12em; }
+    .markdown-body .frac .num { border-bottom:1px solid currentColor; padding:0 .18em .06em; }
+    .markdown-body .frac .den { padding:.06em .18em 0; }
+    .markdown-body .md-image-placeholder { display:inline-block; color:var(--muted); border:1px dashed var(--border); border-radius:5px; padding:3px 7px; font:10px var(--mono); }
+    .placeholder { height:100%; display:grid; place-items:center; color:var(--muted); text-align:center; }
+    .placeholder div { line-height:1.8; }
+    .page-head { margin:12px 0 6px; color:var(--muted); font:9px var(--mono); border-bottom:1px solid var(--soft);
+      padding-bottom:4px; letter-spacing:.1em; }
+    .working { color:var(--muted); }
+    .download-card { display:none; margin:12px 18px 16px; padding:12px; border:1px solid rgba(74,158,255,.45);
+      border-radius:8px; background:rgba(74,158,255,.06); align-items:center; gap:10px; }
+    .download-card.visible { display:flex; }
+    .download-card .info { min-width:0; flex:1; }
+    .download-card .title { font-size:12px; font-weight:600; color:var(--text); }
+    .download-card .sub { margin-top:3px; color:var(--muted); font:9px var(--mono); }
+    .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%) translateY(50px); background:var(--card);
+      border:1px solid var(--border); color:var(--text); border-radius:8px; padding:9px 15px; font:10px var(--mono);
+      opacity:0; transition:.25s; pointer-events:none; }
+    .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+    @media (max-width:900px) {
+      .main { grid-template-columns:1fr; overflow:auto; }
+      .panel { min-height:55vh; }
+      .panel:first-child { border-right:0; border-bottom:1px solid var(--border); }
+      .actions .optional { display:none; }
+      .meta { display:none; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo"><div class="logo-icon">📄</div>Unlimited<span>-OCR</span></div>
+    <div class="sep"></div>
+    <div class="modes">
+      <button id="mode-long" class="mode active" onclick="setMode('long')">Long</button>
+      <button id="mode-base" class="mode" onclick="setMode('base')">Base</button>
+    </div>
+    <div class="actions">
+      <button class="btn optional" onclick="copyText()" id="copy-btn" disabled>COPY TEXT</button>
+      <button class="btn optional" onclick="resetAll()">RESET</button>
+      <button class="btn primary" onclick="startOCR()" id="start-btn" disabled>START OCR</button>
+      <button class="btn stop" onclick="stopOCR()" id="stop-btn" disabled>STOP</button>
+      <button class="btn download" onclick="downloadPDF()" id="download-btn" disabled>DOWNLOAD PDF</button>
+    </div>
+  </header>
+
+  <div class="statusbar">
+    <div class="dot" id="dot"></div>
+    <div id="status">CONNECTING…</div>
+    <div class="meta">MODEL <span>baidu/Unlimited-OCR</span> · MODE <span id="mode-meta">LONG</span> · PDF <span id="pdf-mode-meta">OFF</span> · <span id="count-meta">0 chars</span></div>
+  </div>
+  <div class="progress-wrap"><div id="progress"></div></div>
+
+  <div class="main">
+    <section class="panel">
+      <div class="panel-head">
+        <div class="label">INPUT</div><div class="tag" id="file-tag">EMPTY</div>
+        <div class="file-name" id="file-name"></div>
+      </div>
+      <div class="input-body">
+        <div class="drop" id="drop-zone" onclick="document.getElementById('file-input').click()">
+          <div class="icon">📄</div>
+          <div class="title">Drop your document here</div>
+          <div class="hint">or click to browse</div>
+          <div class="chips"><span class="chip">PDF</span><span class="chip">PNG</span><span class="chip">JPG</span><span class="chip">WEBP</span><span class="chip">TIFF</span></div>
+        </div>
+        <img id="image-preview" alt="Document preview">
+        <div id="pdf-wrap"><iframe id="pdf-preview" title="PDF preview"></iframe></div>
+      </div>
+      <div class="prompt"><label>PROMPT</label><input id="prompt" value="document parsing."></div>
+      <div class="pdf-output disabled" id="pdf-output-options">
+        <div class="output-label">PDF OUTPUT</div>
+        <label class="output-choice generate" title="PDF generation is optional. Leave this unticked for OCR text only.">
+          <input type="checkbox" id="generate-pdf">
+          <span class="check">✓</span>
+          <span class="choice-copy"><div class="choice-title">GENERATE PDF</div><div class="choice-sub">Optional - unticked means OCR text only</div></span>
+        </label>
+        <label class="output-choice mode-disabled" data-pdf-mode-choice title="Preserve the original scan and add an invisible searchable OCR text layer.">
+          <input type="radio" name="pdf-output-mode" value="searchable_scan" checked disabled>
+          <span class="check">✓</span>
+          <span class="choice-copy"><div class="choice-title">SEARCHABLE SCAN</div><div class="choice-sub">Default PDF mode · original page + invisible searchable text</div></span>
+        </label>
+        <label class="output-choice mode-disabled" data-pdf-mode-choice title="Create a new PDF using visible OCR text and cropped figures/images.">
+          <input type="radio" name="pdf-output-mode" value="reconstructed" disabled>
+          <span class="check">✓</span>
+          <span class="choice-copy"><div class="choice-title">RECONSTRUCTED PDF</div><div class="choice-sub">Visible OCR text + real tables + typeset equations + images</div></span>
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div class="label">OCR OUTPUT</div><div class="tag" id="output-tag">WAITING</div>
+        <div class="view-toggle" title="Rendered is the default. Markdown shows the OCR source without detection tags.">
+          <button class="view-btn active" id="view-rendered" onclick="setOutputView('rendered')">RENDERED</button>
+          <button class="view-btn" id="view-markdown" onclick="setOutputView('markdown')">MARKDOWN</button>
+        </div>
+      </div>
+      <div id="output"><div class="placeholder"><div>OCR output will appear here line-by-line<br><small>PDF generation is optional and off by default.</small></div></div></div>
+      <div class="download-card" id="download-card">
+        <div style="font-size:24px">✅</div>
+        <div class="info">
+          <div class="title" id="download-title">PDF ready</div>
+          <div class="sub" id="download-sub">Selected PDF output has been generated</div>
+        </div>
+        <button class="btn download" onclick="downloadPDF()">DOWNLOAD</button>
+      </div>
+    </section>
+  </div>
+</div>
+
+<input type="file" id="file-input" hidden accept="image/*,.pdf">
+<div class="toast" id="toast"></div>
+
+<script>
+  let currentFile = null;
+  let currentObjectUrl = null;
+  let isPDF = false;
+  let isRunning = false;
+  let stopRequested = false;
+  let currentMode = "long";
+  let currentOutputMode = "searchable_scan";
+  let generatePDF = false;
+  let outputText = "";
+  let generatedDownloadUrl = null;
+  let generatedFilename = null;
+  let currentAbort = null;
+  let lastPdfBuildContext = null;
+  let isBuildingPDF = false;
+  let outputView = "rendered";
+
+  const el = id => document.getElementById(id);
+
+  async function apiJSON(url, options={}) {
+    const response = await fetch(url, options);
+    let data = null;
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok) {
+      throw new Error(data?.detail || data?.error || `${response.status} ${response.statusText}`);
+    }
+    return data;
+  }
+
+  async function boot() {
+    try {
+      const h = await apiJSON('/health');
+      if (!h.gpu_ready) throw new Error('OCR model is not ready');
+      status('idle', h.mock ? 'READY · mock/test mode' : 'READY · model loaded');
+    } catch (e) {
+      status('error', 'CONNECTION ERROR · ' + e.message);
+    }
+  }
+  boot();
+  el('output').classList.add('rendered');
+
+  window.setMode = m => {
+    currentMode = m;
+    el('mode-long').classList.toggle('active', m === 'long');
+    el('mode-base').classList.toggle('active', m === 'base');
+    el('mode-meta').textContent = m.toUpperCase();
+  };
+
+  function updatePDFModeControls() {
+    const canChooseMode = isPDF && generatePDF && !isRunning && !isBuildingPDF;
+    document.querySelectorAll('input[name="pdf-output-mode"]').forEach(r => { r.disabled = !canChooseMode; });
+    document.querySelectorAll('[data-pdf-mode-choice]').forEach(card => card.classList.toggle('mode-disabled', !canChooseMode));
+    el('pdf-mode-meta').textContent = generatePDF
+      ? (currentOutputMode === 'reconstructed' ? 'RECONSTRUCTED' : 'SEARCHABLE SCAN')
+      : 'OFF';
+  }
+
+  function setOutputOptionsEnabled(enabled) {
+    el('pdf-output-options').classList.toggle('disabled', !enabled);
+    el('generate-pdf').disabled = !enabled;
+    updatePDFModeControls();
+  }
+
+  el('generate-pdf').addEventListener('change', async e => {
+    generatePDF = !!e.target.checked;
+    updatePDFModeControls();
+
+    if (!generatePDF) {
+      generatedDownloadUrl = null; generatedFilename = null;
+      el('download-btn').disabled = true;
+      el('download-card').classList.remove('visible');
+      if (!isRunning) status('done', lastPdfBuildContext ? 'DONE · OCR TEXT READY' : 'READY · PDF OUTPUT OFF');
+      return;
+    }
+
+    if (lastPdfBuildContext && !isRunning && !isBuildingPDF) {
+      try { await buildSelectedPDF(lastPdfBuildContext); }
+      catch (err) { showError(err.message || String(err)); }
+    }
+  });
+
+  document.querySelectorAll('input[name="pdf-output-mode"]').forEach(radio => {
+    radio.addEventListener('change', async e => {
+      if (!e.target.checked) return;
+      currentOutputMode = e.target.value;
+      updatePDFModeControls();
+      if (generatePDF && lastPdfBuildContext && !isRunning && !isBuildingPDF) {
+        try { await buildSelectedPDF(lastPdfBuildContext); }
+        catch (err) { showError(err.message || String(err)); }
+      } else if (generatedDownloadUrl) {
+        generatedDownloadUrl = null; generatedFilename = null;
+        el('download-btn').disabled = true;
+        el('download-card').classList.remove('visible');
+      }
+    });
+  });
+
+  el('file-input').addEventListener('change', e => { if (e.target.files?.[0]) loadFile(e.target.files[0]); });
+  const dz = el('drop-zone');
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    if (e.dataTransfer.files?.[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  function loadFile(file) {
+    currentFile = file;
+    isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    generatedDownloadUrl = null; generatedFilename = null; outputText = ''; lastPdfBuildContext = null;
+    generatePDF = false; currentOutputMode = 'searchable_scan';
+    el('generate-pdf').checked = false;
+    document.querySelector('input[name="pdf-output-mode"][value="searchable_scan"]').checked = true;
+
+    if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
+    currentObjectUrl = URL.createObjectURL(file);
+
+    el('download-btn').disabled = true;
+    el('download-card').classList.remove('visible');
+    el('file-tag').textContent = isPDF ? 'PDF' : (file.name.split('.').pop() || 'IMAGE').toUpperCase();
+    el('file-name').textContent = file.name;
+    el('drop-zone').style.display = 'none';
+    el('image-preview').style.display = 'none';
+    el('pdf-wrap').classList.remove('visible');
+    clearOutput();
+
+    setOutputOptionsEnabled(isPDF);
+    if (isPDF) {
+      el('pdf-preview').src = currentObjectUrl;
+      el('pdf-wrap').classList.add('visible');
+    } else {
+      el('image-preview').src = currentObjectUrl;
+      el('image-preview').style.display = 'block';
+    }
+    status('idle', 'READY · ' + file.name);
+    el('start-btn').disabled = false;
+  }
+
+  function cleanForDisplay(raw, trimResult=true) {
+    if (!raw) return '';
+    let cleaned = raw
+      .replace(/<\|det\|>\s*[A-Za-z_][\w-]*\s*(?:\[[^\]]*\])?\s*<\|\/det\|>/g, '')
+      .replace(/<\|ref\|>.*?<\|\/ref\|>/gs, '');
+    return trimResult ? cleaned.trim() : cleaned;
+  }
+
+  function escapeHTML(text) {
+    return String(text ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function safeUrl(url) {
+    try {
+      const u = new URL(url, window.location.origin);
+      if (['http:','https:','mailto:'].includes(u.protocol)) return u.href;
+    } catch (_) {}
+    return '#';
+  }
+
+  const MATH_SYMBOLS = {
+    alpha:'α', beta:'β', gamma:'γ', delta:'δ', epsilon:'ε', varepsilon:'ε', theta:'θ', lambda:'λ', mu:'μ', nu:'ν',
+    pi:'π', rho:'ρ', sigma:'σ', tau:'τ', phi:'φ', varphi:'φ', chi:'χ', psi:'ψ', omega:'ω',
+    Gamma:'Γ', Delta:'Δ', Theta:'Θ', Lambda:'Λ', Pi:'Π', Sigma:'Σ', Phi:'Φ', Psi:'Ψ', Omega:'Ω',
+    infty:'∞', times:'×', cdot:'·', pm:'±', mp:'∓', leq:'≤', geq:'≥', neq:'≠', approx:'≈', sim:'∼',
+    rightarrow:'→', leftarrow:'←', leftrightarrow:'↔', degree:'°', circ:'°', partial:'∂', nabla:'∇'
+  };
+
+  function latexLite(raw) {
+    let x = escapeHTML(String(raw || '').trim());
+    x = x.replace(/\\(?:text|mathrm|mathbf|mathit)\s*\{([^{}]*)\}/g, '$1');
+    let previous = '';
+    for (let i=0; i<5 && previous !== x; i++) {
+      previous = x;
+      x = x.replace(/\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '<span class="frac"><span class="num">$1</span><span class="den">$2</span></span>');
+      x = x.replace(/\\sqrt\s*\{([^{}]*)\}/g, '√($1)');
+      x = x.replace(/\^\s*\{([^{}]*)\}/g, '<sup>$1</sup>').replace(/_\s*\{([^{}]*)\}/g, '<sub>$1</sub>');
+      x = x.replace(/\^([A-Za-z0-9+\-]+)/g, '<sup>$1</sup>').replace(/_([A-Za-z0-9+\-]+)/g, '<sub>$1</sub>');
+    }
+    x = x.replace(/\\([A-Za-z]+)/g, (m, name) => MATH_SYMBOLS[name] ?? name);
+    x = x.replace(/\\[,;! ]/g, ' ').replace(/\\_/g, '_').replace(/\\%/g, '%');
+    x = x.replace(/[{}]/g, '');
+    return x;
+  }
+
+  function extractSafeHtmlTables(source, stash) {
+    return source.replace(/<table\b[\s\S]*?<\/table>/gi, tableHtml => {
+      try {
+        const doc = new DOMParser().parseFromString(tableHtml, 'text/html');
+        const table = doc.querySelector('table');
+        if (!table) return tableHtml;
+        let out = '<table>';
+        const caption = table.querySelector(':scope > caption');
+        if (caption) out += `<caption>${escapeHTML(caption.textContent || '')}</caption>`;
+        for (const row of table.querySelectorAll('tr')) {
+          out += '<tr>';
+          for (const cell of row.children) {
+            const tag = cell.tagName.toLowerCase() === 'th' ? 'th' : 'td';
+            const rs = Math.max(1, Math.min(50, parseInt(cell.getAttribute('rowspan') || '1', 10) || 1));
+            const cs = Math.max(1, Math.min(50, parseInt(cell.getAttribute('colspan') || '1', 10) || 1));
+            const attrs = `${rs > 1 ? ` rowspan="${rs}"` : ''}${cs > 1 ? ` colspan="${cs}"` : ''}`;
+            out += `<${tag}${attrs}>${renderInline(cell.textContent || '')}</${tag}>`;
+          }
+          out += '</tr>';
+        }
+        out += '</table>';
+        const key = `@@HTMLTABLE${stash.length}@@`;
+        stash.push({key, html:out});
+        return `\n${key}\n`;
+      } catch (_) { return tableHtml; }
+    });
+  }
+
+  function renderInline(text) {
+    const codeStash = [];
+    const mathStash = [];
+    let x = String(text ?? '');
+
+    x = x.replace(/`([^`]+)`/g, (_, code) => {
+      const key = `@@CODE${codeStash.length}@@`; codeStash.push({key, html:`<code>${escapeHTML(code)}</code>`}); return key;
+    });
+    x = x.replace(/\\\(([^\n]*?)\\\)/g, (_, math) => {
+      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${latexLite(math)}</span>`}); return key;
+    });
+    x = escapeHTML(x);
+    x = x.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt) => `<span class="md-image-placeholder">🖼 ${escapeHTML(alt || 'image')}</span>`);
+    x = x.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="${escapeHTML(safeUrl(url))}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    x = x.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+    x = x.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+    x = x.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+    x = x.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+    [...codeStash, ...mathStash].forEach(item => { x = x.split(escapeHTML(item.key)).join(item.html); });
+    return x;
+  }
+
+  function splitPipeRow(line) {
+    let s = line.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    return s.split(/(?<!\\)\|/).map(v => v.replace(/\\\|/g,'|').trim());
+  }
+
+  function isTableSeparator(line) {
+    const cells = splitPipeRow(line);
+    return cells.length > 0 && cells.every(c => /^:?-{3,}:?$/.test(c));
+  }
+
+  function renderMarkdown(markdown) {
+    const htmlTables = [];
+    let src = extractSafeHtmlTables(String(markdown || '').replace(/\r\n?/g, '\n'), htmlTables);
+    const lines = src.split('\n');
+    const out = [];
+    let paragraph = [];
+    let listType = null;
+    let inCode = false;
+    let codeLang = '';
+    let codeLines = [];
+    let inDisplayMath = false;
+    let mathLines = [];
+
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      out.push(`<p>${renderInline(paragraph.join('\n')).replace(/\n/g,'<br>')}</p>`);
+      paragraph = [];
+    };
+    const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+    const flushCode = () => {
+      out.push(`<pre><code${codeLang ? ` data-lang="${escapeHTML(codeLang)}"` : ''}>${escapeHTML(codeLines.join('\n'))}</code></pre>`);
+      codeLines = []; codeLang = '';
+    };
+    const flushMath = () => {
+      out.push(`<div class="math-display">${latexLite(mathLines.join(' '))}</div>`);
+      mathLines = [];
+    };
+
+    for (let i=0; i<lines.length; i++) {
+      const line = lines[i];
+      const t = line.trim();
+      if (inCode) {
+        if (/^```/.test(t)) { inCode=false; flushCode(); } else codeLines.push(line);
+        continue;
+      }
+      if (inDisplayMath) {
+        if (/\\\]\s*$/.test(t)) { mathLines.push(line.replace(/\\\]\s*$/,'')); inDisplayMath=false; flushMath(); }
+        else if (/\$\$\s*$/.test(t)) { mathLines.push(line.replace(/\$\$\s*$/,'')); inDisplayMath=false; flushMath(); }
+        else mathLines.push(line);
+        continue;
+      }
+      if (/^```/.test(t)) { flushParagraph(); closeList(); inCode=true; codeLang=t.slice(3).trim(); continue; }
+      if (/^\\\[/.test(t)) {
+        flushParagraph(); closeList();
+        const rest=t.replace(/^\\\[/,'');
+        if (/\\\]\s*$/.test(rest)) out.push(`<div class="math-display">${latexLite(rest.replace(/\\\]\s*$/,''))}</div>`);
+        else { inDisplayMath=true; mathLines=[rest]; }
+        continue;
+      }
+      if (/^\$\$/.test(t)) {
+        flushParagraph(); closeList();
+        const rest=t.replace(/^\$\$/,'');
+        if (/\$\$\s*$/.test(rest)) out.push(`<div class="math-display">${latexLite(rest.replace(/\$\$\s*$/,''))}</div>`);
+        else { inDisplayMath=true; mathLines=[rest]; }
+        continue;
+      }
+      if (/^@@HTMLTABLE\d+@@$/.test(t)) { flushParagraph(); closeList(); out.push(t); continue; }
+      if (!t) { flushParagraph(); closeList(); continue; }
+
+      const heading=t.match(/^(#{1,6})\s+(.+)$/);
+      if (heading) { flushParagraph(); closeList(); const n=heading[1].length; out.push(`<h${n}>${renderInline(heading[2])}</h${n}>`); continue; }
+      if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(t)) { flushParagraph(); closeList(); out.push('<hr>'); continue; }
+      const quote=line.match(/^\s*>\s?(.*)$/);
+      if (quote) { flushParagraph(); closeList(); out.push(`<blockquote>${renderInline(quote[1])}</blockquote>`); continue; }
+
+      if (i+1 < lines.length && t.includes('|') && isTableSeparator(lines[i+1])) {
+        flushParagraph(); closeList();
+        const headers=splitPipeRow(line); i += 1;
+        const rows=[];
+        while (i+1 < lines.length && lines[i+1].trim().includes('|') && lines[i+1].trim()) { rows.push(splitPipeRow(lines[++i])); }
+        let table='<table><thead><tr>'+headers.map(h=>`<th>${renderInline(h)}</th>`).join('')+'</tr></thead><tbody>';
+        for (const row of rows) table += '<tr>'+headers.map((_,j)=>`<td>${renderInline(row[j] || '')}</td>`).join('')+'</tr>';
+        table += '</tbody></table>'; out.push(table); continue;
+      }
+
+      const ul=line.match(/^\s*[-+*]\s+(.+)$/);
+      const ol=line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (ul || ol) {
+        flushParagraph(); const wanted=ul?'ul':'ol';
+        if (listType !== wanted) { closeList(); listType=wanted; out.push(`<${wanted}>`); }
+        out.push(`<li>${renderInline((ul || ol)[1])}</li>`); continue;
+      }
+      closeList(); paragraph.push(line);
+    }
+    if (inCode) flushCode();
+    if (inDisplayMath) flushMath();
+    flushParagraph(); closeList();
+
+    let html=out.join('\n');
+    for (const item of htmlTables) html=html.split(item.key).join(item.html);
+    return html;
+  }
+
+  function renderMarkdownInto(node, markdown) {
+    node.dataset.markdown = markdown || '';
+    if (outputView === 'rendered') {
+      node.classList.add('markdown-body');
+      node.innerHTML = renderMarkdown(markdown || '');
+    } else {
+      node.classList.remove('markdown-body');
+      node.textContent = markdown || '';
+    }
+  }
+
+  window.setOutputView = view => {
+    outputView = view === 'markdown' ? 'markdown' : 'rendered';
+    el('view-rendered').classList.toggle('active', outputView === 'rendered');
+    el('view-markdown').classList.toggle('active', outputView === 'markdown');
+    el('output').classList.toggle('rendered', outputView === 'rendered');
+    document.querySelectorAll('#output [data-markdown]').forEach(node => renderMarkdownInto(node, node.dataset.markdown || ''));
+    const single = el('output').dataset.singleMarkdown;
+    if (single !== undefined && single !== '') renderSingleOutput(single);
+  };
+
+
+  async function uploadCurrentFile() {
+    const form = new FormData();
+    form.append('file', currentFile, currentFile.name);
+    currentAbort = new AbortController();
+    return apiJSON('/api/upload', { method:'POST', body:form, signal:currentAbort.signal });
+  }
+
+  async function streamOCR(fileId, prompt, mode, onResult, pageNumber=null, totalPages=null, onDelta=null) {
+    currentAbort = new AbortController();
+    const response = await fetch('/api/run_ocr', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({file_id:fileId, mode, prompt, page_number:pageNumber, total_pages:totalPages}), signal:currentAbort.signal
+    });
+    if (!response.ok) {
+      let msg = `${response.status} ${response.statusText}`;
+      try { const e = await response.json(); msg = e.detail || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalRaw = '';
+
+    while (true) {
+      if (stopRequested) { try { reader.cancel(); } catch (_) {} return finalRaw; }
+      const {done, value} = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), {stream:!done});
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.type === 'error') throw new Error(msg.error || 'OCR failed');
+        if (msg.type === 'status' && msg.text) status('running', msg.text.toUpperCase());
+        if (msg.type === 'delta' && msg.text && onDelta) onDelta(msg.text, msg);
+        if (msg.type === 'result') {
+          finalRaw = msg.text || '';
+          if (onResult) onResult(finalRaw, msg);
+        }
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) {
+      const msg = JSON.parse(buffer);
+      if (msg.type === 'error') throw new Error(msg.error || 'OCR failed');
+      if (msg.type === 'status' && msg.text) status('running', msg.text.toUpperCase());
+      if (msg.type === 'delta' && msg.text && onDelta) onDelta(msg.text, msg);
+      if (msg.type === 'result') { finalRaw = msg.text || ''; if (onResult) onResult(finalRaw, msg); }
+    }
+    return finalRaw;
+  }
+
+  window.startOCR = async () => {
+    if (!currentFile || isRunning) return;
+    isRunning = true; stopRequested = false; outputText = '';
+    generatedDownloadUrl = null; generatedFilename = null;
+    el('download-btn').disabled = true;
+    el('download-card').classList.remove('visible');
+    el('start-btn').disabled = true;
+    el('stop-btn').disabled = false;
+    el('copy-btn').disabled = true;
+    el('output-tag').textContent = 'RUNNING';
+    setOutputOptionsEnabled(false);
+    clearOutput(); setProgress(2);
+
+    const prompt = el('prompt').value || 'document parsing.';
+    const mode = currentMode === 'long' ? 'gundam' : 'base';
+
+    try {
+      status('running', 'UPLOADING…');
+      const uploaded = await uploadCurrentFile();
+      if (isPDF) await runPDF(uploaded.file_id, prompt, mode);
+      else await runImage(uploaded.file_id, prompt, mode);
+    } catch (e) {
+      if (e.name === 'AbortError' || stopRequested) stopped();
+      else showError(e.message || String(e));
+    } finally {
+      currentAbort = null;
+      isRunning = false;
+      el('start-btn').disabled = false;
+      el('stop-btn').disabled = true;
+      setOutputOptionsEnabled(isPDF);
+    }
+  };
+
+  async function runImage(fileId, prompt, mode) {
+    status('running', 'RUNNING OCR…');
+    let liveText = '';
+    const raw = await streamOCR(fileId, prompt, mode, (r, meta) => {
+      outputText = cleanForDisplay(r);
+      renderSingleOutput(outputText);
+    }, null, null, delta => {
+      const clean = cleanForDisplay(delta, false);
+      if (!clean) return;
+      liveText += clean;
+      renderSingleOutput(liveText);
+    });
+    if (stopRequested) return stopped();
+    outputText = cleanForDisplay(raw);
+    renderSingleOutput(outputText);
+    done(outputText);
+  }
+
+  async function runPDF(pdfId, prompt, mode) {
+    status('running', 'EXTRACTING PDF PAGES…');
+    currentAbort = new AbortController();
+    const exploded = await apiJSON('/api/explode_pdf', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({file_id:pdfId}), signal:currentAbort.signal
+    });
+    const pages = exploded.pages || [];
+    if (!pages.length) throw new Error('No pages found in PDF.');
+
+    const pageRawTexts = new Array(pages.length).fill('');
+    const pageCleanTexts = new Array(pages.length).fill('');
+    const out = el('output'); out.innerHTML = '';
+
+    for (let i=0; i<pages.length; i++) {
+      if (stopRequested) return stopped();
+      status('running', `OCR · PAGE ${i+1} / ${pages.length}`);
+      setProgress(Math.max(4, Math.round((i / pages.length) * 90)));
+
+      const head = document.createElement('div');
+      head.className = 'page-head'; head.textContent = `── PAGE ${i+1} / ${pages.length} ──`;
+      const body = document.createElement('div');
+      body.className = 'working ocr-page-body'; body.dataset.markdown = ''; body.textContent = 'running OCR…';
+      out.append(head, body); out.scrollTop = out.scrollHeight;
+
+      const pageStarted = performance.now();
+      const raw = await streamOCR(pages[i].file_id, prompt, mode, (r, meta) => {
+        pageRawTexts[i] = r;
+        pageCleanTexts[i] = cleanForDisplay(r);
+        body.className = 'ocr-page-body';
+        const elapsed = meta?.elapsed_seconds ?? ((performance.now() - pageStarted) / 1000);
+        const blocks = meta?.detected_blocks;
+        renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)');
+        head.textContent = `── PAGE ${i+1} / ${pages.length} · ${elapsed.toFixed(1)}s${Number.isFinite(blocks) ? ` · ${blocks} blocks` : ''} ──`;
+        out.scrollTop = out.scrollHeight;
+      }, i + 1, pages.length, delta => {
+        const clean = cleanForDisplay(delta, false);
+        if (!clean) return;
+        body.className = 'ocr-page-body';
+        const previous = body.dataset.markdown || '';
+        renderMarkdownInto(body, previous + clean);
+        out.scrollTop = out.scrollHeight;
+      });
+      pageRawTexts[i] = raw;
+      pageCleanTexts[i] = cleanForDisplay(raw);
+      body.className = 'ocr-page-body';
+      renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)');
+      setProgress(Math.max(4, Math.round(((i + 1) / pages.length) * 90)));
+    }
+
+    outputText = pageCleanTexts.join('\n\n');
+    el('copy-btn').disabled = !outputText;
+    if (stopRequested) return stopped();
+
+    lastPdfBuildContext = {
+      pdfId,
+      pageRawTexts: [...pageRawTexts],
+      pageIds: pages.map(p => p.file_id),
+    };
+    if (generatePDF) await buildSelectedPDF(lastPdfBuildContext);
+    else done(outputText, false);
+  }
+
+  async function buildSelectedPDF(ctx) {
+    if (!generatePDF || !ctx || isBuildingPDF) return;
+    isBuildingPDF = true;
+    setOutputOptionsEnabled(false);
+    const requestedMode = currentOutputMode;
+    const reconstructed = requestedMode === 'reconstructed';
+    try {
+      status('running', reconstructed ? 'BUILDING RECONSTRUCTED PDF…' : 'BUILDING SEARCHABLE SCAN…');
+      setProgress(94);
+      el('download-btn').disabled = true;
+      el('download-card').classList.remove('visible');
+      currentAbort = new AbortController();
+
+      const info = await apiJSON('/api/make_pdf', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          pdf_id:ctx.pdfId,
+          page_texts:ctx.pageRawTexts,
+          page_ids:ctx.pageIds,
+          output_mode:requestedMode
+        }),
+        signal:currentAbort.signal
+      });
+      if (!info.download_url) throw new Error('No download URL was returned.');
+
+      generatedDownloadUrl = new URL(info.download_url, window.location.origin).toString();
+      generatedFilename = info.filename || (reconstructed ? 'reconstructed.pdf' : 'searchable.pdf');
+      el('download-title').textContent = generatedFilename + ' is ready';
+      const s = info.stats || {};
+      if (info.output_mode === 'reconstructed') {
+        el('download-sub').textContent = `Reconstructed PDF · ${s.visible_text_blocks ?? 0} text · ${s.table_blocks ?? 0} tables · ${s.equation_blocks ?? 0} equations · ${s.image_blocks ?? 0} images` +
+          ((s.image_fallback_blocks ?? 0) ? ` · ${s.image_fallback_blocks} visual fallbacks` : '');
+      } else {
+        el('download-sub').textContent = `Searchable scan · original pages preserved · ${s.positioned_blocks ?? 0} OCR blocks · ${s.positioned_lines ?? 0} fitted lines` +
+          ((s.fallback_blocks ?? 0) ? ` · ${s.fallback_blocks} fallback blocks` : '');
+      }
+      el('download-card').classList.add('visible');
+      el('download-btn').disabled = false;
+      done(outputText, true, info.output_mode);
+    } finally {
+      isBuildingPDF = false;
+      setOutputOptionsEnabled(isPDF && !isRunning);
+    }
+  }
+
+  window.stopOCR = () => {
+    stopRequested = true;
+    if (currentAbort) currentAbort.abort();
+  };
+  window.copyText = async () => {
+    if (!outputText) return;
+    await navigator.clipboard.writeText(outputText); toast('OCR text copied');
+  };
+  window.downloadPDF = () => {
+    if (!generatedDownloadUrl) return;
+    const a = document.createElement('a');
+    a.href = generatedDownloadUrl; a.download = generatedFilename || 'searchable.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  window.resetAll = () => {
+    if (isRunning) stopOCR();
+    currentFile = null; isPDF = false; outputText = ''; generatedDownloadUrl = null; generatedFilename = null; lastPdfBuildContext = null;
+    generatePDF = false; currentOutputMode = 'searchable_scan';
+    el('generate-pdf').checked = false;
+    document.querySelector('input[name="pdf-output-mode"][value="searchable_scan"]').checked = true;
+    if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
+    el('file-input').value = '';
+    el('drop-zone').style.display = 'flex';
+    el('image-preview').style.display = 'none'; el('image-preview').src = '';
+    el('pdf-wrap').classList.remove('visible'); el('pdf-preview').src = 'about:blank';
+    el('file-tag').textContent = 'EMPTY'; el('file-name').textContent = '';
+    el('start-btn').disabled = true; el('stop-btn').disabled = true; el('copy-btn').disabled = true;
+    el('download-btn').disabled = true; el('download-card').classList.remove('visible');
+    setOutputOptionsEnabled(false);
+    clearOutput(); setProgress(0); status('idle', 'IDLE · upload a PDF or image');
+  };
+
+  function renderSingleOutput(text) {
+    const out = el('output');
+    out.dataset.singleMarkdown = text || '';
+    out.classList.toggle('rendered', outputView === 'rendered');
+    if (outputView === 'rendered') {
+      out.innerHTML = `<div class="markdown-body">${renderMarkdown(text || '')}</div>`;
+    } else {
+      out.textContent = text || '';
+    }
+    out.scrollTop = out.scrollHeight;
+    el('count-meta').textContent = `${(text || '').length.toLocaleString()} chars`;
+  }
+  function clearOutput() {
+    el('output').dataset.singleMarkdown = '';
+    el('output').classList.toggle('rendered', outputView === 'rendered');
+    el('output').innerHTML = '<div class="placeholder"><div>OCR output will appear here line-by-line<br><small>Rendered Markdown is shown by default · PDF generation is optional.</small></div></div>';
+    el('output-tag').textContent = 'WAITING'; el('count-meta').textContent = '0 chars';
+  }
+  function done(text, pdfReady=false, outputMode=null) {
+    const label = outputMode === 'reconstructed' ? 'RECONSTRUCTED PDF READY' :
+      (outputMode === 'searchable_scan' ? 'SEARCHABLE SCAN READY' : 'PDF READY');
+    setProgress(100); status('done', pdfReady ? `DONE · ${label}` : 'DONE');
+    el('output-tag').textContent = 'DONE'; el('copy-btn').disabled = !text;
+    el('count-meta').textContent = `${(text || '').length.toLocaleString()} chars`;
+  }
+  function stopped() {
+    status('idle', 'STOPPED BY USER'); el('output-tag').textContent = 'STOPPED';
+    el('start-btn').disabled = false; el('stop-btn').disabled = true;
+  }
+  function showError(message) {
+    status('error', 'ERROR · ' + message); el('output-tag').textContent = 'ERROR';
+    el('output').textContent = 'Error: ' + message;
+  }
+  function status(kind, text) { el('dot').className = 'dot ' + kind; el('status').textContent = text; }
+  function setProgress(n) { el('progress').style.width = `${Math.max(0, Math.min(100, n))}%`; }
+  function toast(text) {
+    const t=el('toast'); t.textContent=text; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800);
+  }
+</script>
+</body>
+</html>

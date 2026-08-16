@@ -1,0 +1,22 @@
+# Local web backend
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+python-multipart>=0.0.9
+
+# Baidu Unlimited-OCR tested stack / close compatibility pins
+transformers==4.57.1
+accelerate>=1.0,<2.0
+Pillow==12.1.1
+matplotlib==3.10.8
+einops==0.8.2
+addict==2.4.0
+easydict==1.13
+pymupdf==1.27.2.2
+psutil==7.2.2
+
+# Model download / utility dependencies
+huggingface_hub>=0.34,<1.0
+numpy>=1.26
+requests>=2.31
+tqdm>=4.66
+hf_xet>=1.1.0
