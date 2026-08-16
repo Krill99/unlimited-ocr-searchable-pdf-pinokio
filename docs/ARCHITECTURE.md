@@ -43,3 +43,9 @@ The backend temporarily replaces the upstream streamer class with a callback str
 ## Reconstructed PDF
 
 `app/reconstructed_pdf.py` creates new PDF pages. Text becomes visible PDF text, supported table markup becomes real table structures, common math markup is typeset, and visual regions such as figures/charts are cropped from the OCR raster and placed into the new PDF.
+## Rendered OCR visual regions
+
+For PDF input, the backend keeps the exact raster page sent to Unlimited-OCR. When the model emits an `image`, `figure`, `diagram`, `chart`, or related visual detection box, the Web UI converts that normalized 0–999 box into a local `/api/page_region/...` URL. The backend crops that box from the OCR raster and caches the PNG locally under the temporary page workspace. This lets the Rendered Markdown view show figures in document order without sending document content to an external image host.
+
+The lightweight local math renderer supports common LaTeX notation, standard Greek commands, and `array` environments. It intentionally avoids an external CDN so the Web UI remains usable offline after installation.
+
