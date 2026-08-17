@@ -6,6 +6,8 @@ import re
 import tempfile
 from typing import Iterable, Sequence
 
+import numpy as np
+from PIL import Image
 import pymupdf as fitz
 
 
@@ -199,6 +201,368 @@ def _normalized_bbox_to_rotated_page_rect(
         page_rect.x0 + x1 / _COORD_MAX * page_rect.width,
         page_rect.y0 + y1 / _COORD_MAX * page_rect.height,
     )
+
+
+
+_SKIP_IMAGE_REFINEMENT_TYPES = {
+    "image", "figure", "fig", "photo", "picture", "illustration", "diagram",
+    "chart", "plot", "graph", "logo", "barcode", "qr", "stamp", "seal",
+    "signature", "table", "formula", "equation", "math", "chemical_formula",
+}
+
+
+def _normalized_bbox_to_pixel_rect(
+    bbox: tuple[float, float, float, float],
+    source_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """Map a 0..999 Unlimited-OCR bbox to clipped source-image pixel coordinates."""
+    width, height = source_size
+    x0, y0, x1, y1 = bbox
+    x0 = max(0.0, min(_COORD_MAX, x0))
+    y0 = max(0.0, min(_COORD_MAX, y0))
+    x1 = max(0.0, min(_COORD_MAX, x1))
+    y1 = max(0.0, min(_COORD_MAX, y1))
+    px0 = max(0, min(width - 1, int(round(x0 / _COORD_MAX * width))))
+    py0 = max(0, min(height - 1, int(round(y0 / _COORD_MAX * height))))
+    px1 = max(px0 + 1, min(width, int(round(x1 / _COORD_MAX * width))))
+    py1 = max(py0 + 1, min(height, int(round(y1 / _COORD_MAX * height))))
+    return px0, py0, px1, py1
+
+
+def _pixel_rect_to_rotated_page_rect(
+    page: fitz.Page,
+    pixel_rect: tuple[int, int, int, int],
+    source_size: tuple[int, int],
+) -> fitz.Rect:
+    """Map a source-image pixel rectangle to the displayed / rotated PDF page."""
+    width, height = source_size
+    x0, y0, x1, y1 = pixel_rect
+    page_rect = page.rect
+    return fitz.Rect(
+        page_rect.x0 + (x0 / width) * page_rect.width,
+        page_rect.y0 + (y0 / height) * page_rect.height,
+        page_rect.x0 + (x1 / width) * page_rect.width,
+        page_rect.y0 + (y1 / height) * page_rect.height,
+    )
+
+
+def _otsu_threshold(gray: np.ndarray) -> int:
+    """Small dependency-free Otsu threshold for document line segmentation."""
+    flat = np.asarray(gray, dtype=np.uint8).ravel()
+    if flat.size == 0:
+        return 127
+    hist = np.bincount(flat, minlength=256).astype(np.float64)
+    total = hist.sum()
+    if total <= 0:
+        return 127
+    prob = hist / total
+    omega = np.cumsum(prob)
+    mu = np.cumsum(prob * np.arange(256, dtype=np.float64))
+    mu_t = mu[-1]
+    denom = omega * (1.0 - omega)
+    sigma = np.zeros(256, dtype=np.float64)
+    valid = denom > 1e-12
+    sigma[valid] = ((mu_t * omega[valid] - mu[valid]) ** 2) / denom[valid]
+    return int(np.argmax(sigma))
+
+
+def _true_runs(flags: np.ndarray) -> list[tuple[int, int]]:
+    """Return [start,end) runs of True values."""
+    flags = np.asarray(flags, dtype=bool)
+    if flags.size == 0:
+        return []
+    padded = np.pad(flags.astype(np.int8), (1, 1))
+    edges = np.diff(padded)
+    starts = np.where(edges == 1)[0]
+    ends = np.where(edges == -1)[0]
+    return [(int(a), int(b)) for a, b in zip(starts, ends) if b > a]
+
+
+def _merge_runs(runs: list[tuple[int, int]], max_gap: int) -> list[tuple[int, int]]:
+    if not runs:
+        return []
+    merged = [list(runs[0])]
+    for start, end in runs[1:]:
+        if start - merged[-1][1] <= max_gap:
+            merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return [(int(a), int(b)) for a, b in merged]
+
+
+def _foreground_mask(gray: np.ndarray) -> np.ndarray:
+    """Return a conservative foreground mask for dark-on-light or light-on-dark text."""
+    arr = np.asarray(gray, dtype=np.uint8)
+    if arr.size == 0:
+        return np.zeros_like(arr, dtype=bool)
+    threshold = _otsu_threshold(arr)
+    dark = arr <= threshold
+    light = arr >= threshold
+    dark_fraction = float(dark.mean())
+    light_fraction = float(light.mean())
+
+    # Documents are normally dark-on-light. Switch polarity only when the dark
+    # mask would classify most of the region as foreground and the light mask is
+    # substantially sparser (e.g. white text on a dark banner).
+    if dark_fraction > 0.55 and 0.001 < light_fraction < dark_fraction:
+        mask = light
+    else:
+        mask = dark
+
+    # Ignore tiny isolated noise by requiring some local row support later.
+    return mask
+
+
+def _detect_word_runs(line_mask: np.ndarray, line_height: int) -> list[tuple[int, int]]:
+    """Detect likely word x-runs from ink, merging character-size gaps only."""
+    if line_mask.size == 0:
+        return []
+    col_active = line_mask.sum(axis=0) >= 1
+    glyph_runs = _true_runs(col_active)
+    if not glyph_runs:
+        return []
+    # At 200 dpi this is ~2-5 px for ordinary body text: enough to join letters
+    # and punctuation, but normally smaller than an inter-word space.
+    char_gap = max(1, int(round(max(3, line_height) * 0.20)))
+    words = _merge_runs(glyph_runs, char_gap)
+    return [(a, b) for a, b in words if b - a >= 1]
+
+
+def _detect_text_line_geometry(
+    source_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+) -> list[dict]:
+    """
+    Detect real printed line rectangles inside one Unlimited-OCR block.
+
+    This uses only the source pixels already sent to Unlimited-OCR: no second OCR
+    engine is introduced. Horizontal projection finds text rows; per-row x bounds
+    tighten each selection rectangle to the actual ink rather than the whole block.
+    """
+    width, height = source_image.size
+    px0, py0, px1, py1 = _normalized_bbox_to_pixel_rect(bbox, (width, height))
+    crop = np.asarray(source_image.crop((px0, py0, px1, py1)).convert("L"), dtype=np.uint8)
+    if crop.ndim != 2 or crop.shape[0] < 3 or crop.shape[1] < 3:
+        return []
+
+    mask = _foreground_mask(crop)
+    h, w = mask.shape
+    # Require a tiny but meaningful amount of ink on a row. This avoids isolated
+    # dust while retaining short headings / narrow columns.
+    min_row_ink = max(2, int(round(w * 0.003)))
+    row_active = mask.sum(axis=1) >= min_row_ink
+
+    # Close small vertical gaps caused by thin glyphs / antialiasing, then form lines.
+    raw_runs = _true_runs(row_active)
+    line_gap = max(1, int(round(h * 0.012)))
+    runs = _merge_runs(raw_runs, line_gap)
+    min_line_h = max(2, int(round(h * 0.012)))
+    runs = [(a, b) for a, b in runs if b - a >= min_line_h]
+    if not runs or len(runs) > 80:
+        return []
+
+    # A single very tall ink band in a tall/narrow block is usually vertical text,
+    # a graphic, or a bad threshold rather than a normal horizontal reading line.
+    if len(runs) == 1 and (runs[0][1] - runs[0][0]) > h * 0.60 and h > w * 1.15:
+        return []
+
+    # Reject obvious non-text segmentation: text lines should not cover almost the
+    # entire block vertically as dozens of tiny bands.
+    coverage = sum(b - a for a, b in runs) / max(1, h)
+    if len(runs) > 8 and coverage > 0.85:
+        return []
+
+    pad_y = max(1, int(round(h * 0.004)))
+    out: list[dict] = []
+    for start, end in runs:
+        y0 = max(0, start - pad_y)
+        y1 = min(h, end + pad_y)
+        band = mask[y0:y1, :]
+        cols = np.where(band.sum(axis=0) > 0)[0]
+        if cols.size == 0:
+            continue
+        lx0 = max(0, int(cols[0]) - 1)
+        lx1 = min(w, int(cols[-1]) + 2)
+        if lx1 - lx0 < 2:
+            continue
+
+        word_runs = _detect_word_runs(band[:, lx0:lx1], y1 - y0)
+        word_rects = [
+            (px0 + lx0 + a, py0 + y0, px0 + lx0 + b, py0 + y1)
+            for a, b in word_runs
+        ]
+        out.append({
+            "pixel_rect": (px0 + lx0, py0 + y0, px0 + lx1, py0 + y1),
+            "width": float(lx1 - lx0),
+            "word_rects": word_rects,
+        })
+    return out
+
+
+def _plain_search_text(text: str) -> str:
+    """Remove lightweight Markdown decoration that should not become PDF search text."""
+    text = _clean_text(text)
+    # Markdown images disappear; links keep their visible label.
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
+    # Keep list numbers / bullets because they can be visibly present in the scan.
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return text.strip()
+
+
+def _allocate_text_to_lines(text: str, widths: list[float], font: fitz.Font) -> list[str]:
+    """Split one OCR paragraph into the number of physical lines detected in pixels."""
+    n_lines = len(widths)
+    if n_lines <= 0:
+        return []
+    cleaned = _plain_search_text(text)
+    explicit = [re.sub(r"\s+", " ", ln).strip() for ln in cleaned.splitlines() if ln.strip()]
+    if n_lines == 1:
+        return [re.sub(r"\s+", " ", cleaned).strip()]
+    if len(explicit) == n_lines:
+        return explicit
+
+    words = re.findall(r"\S+", " ".join(explicit) if explicit else cleaned)
+    if not words:
+        return []
+    if len(words) <= n_lines:
+        return words + [""] * (n_lines - len(words))
+
+    def text_width(value: str) -> float:
+        try:
+            return max(0.01, float(font.text_length(value, fontsize=1.0)))
+        except Exception:
+            return max(0.01, float(len(value)))
+
+    word_width = [text_width(w) for w in words]
+    space_width = text_width(" ")
+    prefix = [0.0]
+    for value in word_width:
+        prefix.append(prefix[-1] + value)
+
+    def group_width(i: int, j: int) -> float:
+        # words i:j
+        return (prefix[j] - prefix[i]) + max(0, j - i - 1) * space_width
+
+    safe_widths = [max(1.0, float(v)) for v in widths]
+    total_natural = group_width(0, len(words))
+    total_target = sum(safe_widths)
+    expected = [total_natural * w / total_target for w in safe_widths]
+
+    m = len(words)
+    inf = float("inf")
+    dp = [[inf] * (m + 1) for _ in range(n_lines + 1)]
+    prev = [[-1] * (m + 1) for _ in range(n_lines + 1)]
+    dp[0][0] = 0.0
+
+    for line_idx in range(1, n_lines + 1):
+        min_j = line_idx
+        max_j = m - (n_lines - line_idx)
+        for j in range(min_j, max_j + 1):
+            i_min = line_idx - 1
+            for i in range(i_min, j):
+                if dp[line_idx - 1][i] == inf:
+                    continue
+                gw = group_width(i, j)
+                target = max(0.01, expected[line_idx - 1])
+                mismatch = (gw - target) / target
+                cost = mismatch * mismatch
+                # Strongly discourage gross overfill because that usually means a
+                # visually short line was assigned too many words.
+                if gw > target * 1.35:
+                    cost += ((gw / target) - 1.35) * 2.0
+                cand = dp[line_idx - 1][i] + cost
+                if cand < dp[line_idx][j]:
+                    dp[line_idx][j] = cand
+                    prev[line_idx][j] = i
+
+    if prev[n_lines][m] < 0:
+        # Conservative greedy fallback.
+        result, start = [], 0
+        for line_idx in range(n_lines):
+            remaining_lines = n_lines - line_idx
+            if remaining_lines == 1:
+                result.append(" ".join(words[start:]))
+                break
+            target = expected[line_idx]
+            end = start + 1
+            while end < m - (remaining_lines - 1):
+                if group_width(start, end + 1) > target and end > start:
+                    break
+                end += 1
+            result.append(" ".join(words[start:end]))
+            start = end
+        return result
+
+    cuts = [m]
+    j = m
+    for line_idx in range(n_lines, 0, -1):
+        i = prev[line_idx][j]
+        cuts.append(i)
+        j = i
+    cuts.reverse()
+    return [" ".join(words[cuts[k]:cuts[k + 1]]) for k in range(n_lines)]
+
+
+def _insert_image_refined_block(
+    page: fitz.Page,
+    source_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+    text: str,
+    category: str,
+) -> tuple[int, int, bool]:
+    """Insert image-guided lines, with confidence-based word geometry when exact."""
+    if category in _SKIP_IMAGE_REFINEMENT_TYPES:
+        return 0, 0, False
+    geometry = _detect_text_line_geometry(source_image, bbox)
+    if not geometry:
+        return 0, 0, False
+
+    fontname, font = _font_spec_for_text(page, text)
+    line_texts = _allocate_text_to_lines(text, [g["width"] for g in geometry], font)
+    if not line_texts or not any(line_texts):
+        return 0, 0, False
+
+    source_size = source_image.size
+    inserted_lines = 0
+    inserted_words = 0
+    for line_text, item in zip(line_texts, geometry):
+        line_text = re.sub(r"\s+", " ", line_text).strip()
+        if not line_text:
+            continue
+        words = re.findall(r"\S+", line_text)
+        word_rects = item.get("word_rects") or []
+
+        # Word-level placement is only used with an exact, credible segmentation.
+        # Otherwise one precisely fitted line preserves phrase search more reliably.
+        use_words = (
+            2 <= len(words) <= 40
+            and len(word_rects) == len(words)
+            and all((r[2] - r[0]) >= 2 for r in word_rects)
+        )
+        if use_words:
+            ok_count = 0
+            for word, px_rect in zip(words, word_rects):
+                display_rect = _pixel_rect_to_rotated_page_rect(page, px_rect, source_size)
+                if _insert_exact_invisible_line(page, display_rect, word, fontname, font):
+                    ok_count += 1
+            if ok_count == len(words):
+                inserted_words += ok_count
+                inserted_lines += 1
+                continue
+            # If a font/glyph issue interrupted word insertion, do not duplicate the
+            # successfully inserted words by adding the full line again.
+            if ok_count:
+                inserted_words += ok_count
+                inserted_lines += 1
+                continue
+
+        display_rect = _pixel_rect_to_rotated_page_rect(page, item["pixel_rect"], source_size)
+        if _insert_exact_invisible_line(page, display_rect, line_text, fontname, font):
+            inserted_lines += 1
+
+    return inserted_lines, inserted_words, inserted_lines > 0
 
 
 def _split_lines(text: str) -> list[str]:
@@ -417,7 +781,11 @@ def build_searchable_pdf(
         "positioned_lines": 0,
         "fallback_blocks": 0,
         "source_mapped_pages": 0,
-        "geometry": "precise-box-fit",
+        "image_refined_blocks": 0,
+        "image_refined_lines": 0,
+        "word_refined_words": 0,
+        "box_fit_blocks": 0,
+        "geometry": "image-guided-line-fit",
     }
 
     for page_index, page in enumerate(doc):
@@ -437,20 +805,53 @@ def build_searchable_pdf(
             except Exception:
                 source_size = None
 
+        source_image: Image.Image | None = None
+        if page_index < len(page_sources):
+            src_path = str((page_sources[page_index] or {}).get("path") or "")
+            if src_path and os.path.exists(src_path):
+                try:
+                    with Image.open(src_path) as source_file:
+                        source_image = source_file.convert("RGB")
+                    # Use the actual image dimensions as source-of-truth if registry
+                    # metadata is missing or stale.
+                    source_size = source_image.size
+                except Exception:
+                    source_image = None
+
         fallback_texts: list[str] = []
         for block in blocks:
             text = block.get("text", "")
             bbox = block.get("bbox")
+            category = str(block.get("type") or "text").lower()
             if bbox:
-                display_rect = _normalized_bbox_to_rotated_page_rect(page, bbox, source_size)
-                inserted_lines = _insert_invisible_block(page, display_rect, text)
-                if inserted_lines:
-                    stats["positioned_blocks"] += 1
-                    stats["positioned_lines"] += inserted_lines
-                else:
-                    fallback_texts.append(text)
+                refined = False
+                if source_image is not None:
+                    refined_lines, refined_words, refined = _insert_image_refined_block(
+                        page, source_image, bbox, text, category
+                    )
+                    if refined:
+                        stats["positioned_blocks"] += 1
+                        stats["positioned_lines"] += refined_lines
+                        stats["image_refined_blocks"] += 1
+                        stats["image_refined_lines"] += refined_lines
+                        stats["word_refined_words"] += refined_words
+                if not refined:
+                    display_rect = _normalized_bbox_to_rotated_page_rect(page, bbox, source_size)
+                    inserted_lines = _insert_invisible_block(page, display_rect, text)
+                    if inserted_lines:
+                        stats["positioned_blocks"] += 1
+                        stats["positioned_lines"] += inserted_lines
+                        stats["box_fit_blocks"] += 1
+                    else:
+                        fallback_texts.append(text)
             else:
                 fallback_texts.append(text)
+
+        if source_image is not None:
+            try:
+                source_image.close()
+            except Exception:
+                pass
 
         if fallback_texts:
             joined = "\n".join(t for t in fallback_texts if t.strip())

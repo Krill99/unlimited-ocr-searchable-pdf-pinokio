@@ -707,9 +707,11 @@ def make_pdf(req: PDFBuildRequest):
 
         print(
             f"[PDF] Searchable scan ready · {stats.get('pages_with_ocr', 0)}/{stats.get('pages', 0)} pages · "
-            f"{stats.get('positioned_blocks', 0)} positioned blocks · "
-            f"{stats.get('positioned_lines', 0)} precisely fitted lines · "
-            f"{stats.get('fallback_blocks', 0)} fallback blocks",
+            f"{stats.get('image_refined_blocks', 0)} image-refined blocks · "
+            f"{stats.get('image_refined_lines', 0)} detected text lines · "
+            f"{stats.get('word_refined_words', 0)} word-refined words · "
+            f"{stats.get('box_fit_blocks', 0)} block-fit fallbacks · "
+            f"{stats.get('fallback_blocks', 0)} unpositioned fallbacks",
             flush=True,
         )
 
