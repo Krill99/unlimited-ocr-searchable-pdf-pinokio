@@ -44,3 +44,7 @@ Desktop.ini
 .env
 .env.*
 !.env.example
+
+# KaTeX is downloaded from its official release during installation
+app/vendor/katex/*
+!app/vendor/katex/README.md

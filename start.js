@@ -6,6 +6,7 @@ module.exports = {
       params: {
         venv: "env",
         message: [
+          "python app/download_katex.py --if-missing --optional",
           "python app/app.py"
         ],
         on: [

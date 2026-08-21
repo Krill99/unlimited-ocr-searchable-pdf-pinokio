@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import shutil
+import sys
 import socket
 import tempfile
 import threading
@@ -17,27 +18,31 @@ from typing import Callable, Iterator, Literal
 import pymupdf as fitz
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
 
-try:
-    from searchable_pdf import build_searchable_pdf
-    from reconstructed_pdf import build_reconstructed_pdf
-    from model_patches import patch_model_files
-except ImportError:
-    from app.searchable_pdf import build_searchable_pdf
-    from app.reconstructed_pdf import build_reconstructed_pdf
-    from app.model_patches import patch_model_files
-
-
+# Pinokio launches this file as `python app/app.py`.  In that execution mode
+# the `app` directory itself must be on sys.path and should be imported as a
+# collection of sibling modules, not as a Python package.  Do not use a broad
+# ImportError fallback here: it can hide the real missing dependency/module.
 APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
+from searchable_pdf import build_searchable_pdf
+from reconstructed_pdf import build_reconstructed_pdf
+from model_patches import patch_model_files
+from pdf_text_analysis import analyze_pdf_text
+
+
 ROOT_DIR = APP_DIR.parent
 MODEL_DIR = ROOT_DIR / "models" / "Unlimited-OCR"
 WORK_ROOT = ROOT_DIR / "work"
 WORK_ROOT.mkdir(parents=True, exist_ok=True)
 
 MODEL_NAME = "baidu/Unlimited-OCR"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.9.0"
 MOCK_MODE = os.environ.get("UOCR_MOCK", "0") == "1"
 
 # Simple local registries. IDs, rather than arbitrary paths, are exposed to the browser.
@@ -197,7 +202,7 @@ def _load_model() -> None:
     print("Unlimited-OCR model loaded.", flush=True)
 
 
-def pdf_to_images(pdf_path: str, dpi: int = 200) -> list[dict]:
+def pdf_to_images(pdf_path: str, dpi: int = 200, page_indices: list[int] | None = None) -> list[dict]:
     """
     Rasterize PDF pages only for OCR and retain exact raster geometry.
 
@@ -214,7 +219,21 @@ def pdf_to_images(pdf_path: str, dpi: int = 200) -> list[dict]:
     matrix = fitz.Matrix(dpi / 72.0, dpi / 72.0)
     records: list[dict] = []
     try:
-        for i, page in enumerate(doc):
+        if page_indices is None:
+            indices = list(range(len(doc)))
+        else:
+            indices = []
+            seen: set[int] = set()
+            for raw_index in page_indices:
+                idx = int(raw_index)
+                if idx < 0 or idx >= len(doc):
+                    raise ValueError(f"PDF page {idx + 1} is outside the document range 1-{len(doc)}.")
+                if idx not in seen:
+                    seen.add(idx)
+                    indices.append(idx)
+
+        for i in indices:
+            page = doc[i]
             path = os.path.join(out_dir, f"page_{i + 1:04d}.png")
             pix = page.get_pixmap(matrix=matrix, alpha=False)
             pix.save(path)
@@ -400,6 +419,12 @@ class FileRequest(BaseModel):
     file_id: str
 
 
+class PDFExplodeRequest(BaseModel):
+    file_id: str
+    # Optional 1-based source PDF page numbers. When omitted, every page is rasterized.
+    page_numbers: list[int] = []
+
+
 class OCRRequest(BaseModel):
     file_id: str
     mode: str = "gundam"
@@ -413,6 +438,19 @@ class PDFBuildRequest(BaseModel):
     page_texts: list[str]
     page_ids: list[str] = []
     output_mode: Literal["reconstructed", "searchable_scan"] = "searchable_scan"
+    existing_text_policy: Literal["preserve", "replace"] = "preserve"
+    # Optional partial-export metadata. When page_count is set, only the first
+    # completed pages are emitted to the output PDF. This lets a user stop a
+    # long OCR job and still export everything completed so far.
+    page_count: int | None = None
+    # Number of pages selected for this OCR job (not necessarily the whole PDF).
+    total_pages: int | None = None
+    # 1-based source PDF page numbers represented by page_texts/page_ids.
+    page_numbers: list[int] = []
+    # Full normalized selection, including pages not yet completed after STOP.
+    selected_pages: list[int] = []
+    # Total source-document page count, for labels / validation.
+    original_total_pages: int | None = None
 
 
 class SearchablePDFRequest(BaseModel):
@@ -420,9 +458,18 @@ class SearchablePDFRequest(BaseModel):
     pdf_id: str
     page_texts: list[str]
     page_ids: list[str] = []
+    page_count: int | None = None
+    total_pages: int | None = None
+    page_numbers: list[int] = []
+    selected_pages: list[int] = []
+    original_total_pages: int | None = None
 
 
 app = FastAPI(title="Unlimited OCR – Searchable PDF", version=APP_VERSION)
+
+VENDOR_DIR = APP_DIR / "vendor"
+VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/vendor", StaticFiles(directory=str(VENDOR_DIR)), name="vendor")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -472,30 +519,76 @@ async def upload(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
     file_id = _register_file(dest, original, kind)
+    text_analysis = None
+    pdf_pages = None
+    if kind == "pdf":
+        try:
+            with fitz.open(dest) as _doc:
+                pdf_pages = len(_doc)
+        except Exception:
+            pdf_pages = None
+        try:
+            text_analysis = analyze_pdf_text(dest)
+        except Exception as exc:
+            text_analysis = {
+                "pages": 0,
+                "text_pages": 0,
+                "usable_pages": 0,
+                "partial_pages": 0,
+                "no_text_pages": 0,
+                "overall": "analysis_error",
+                "has_any_text": False,
+                "has_usable_text": False,
+                "page_results": [],
+                "warning": str(exc),
+            }
     return {
         "file_id": file_id,
         "filename": original,
         "kind": kind,
         "size": dest.stat().st_size,
+        "pdf_pages": pdf_pages,
+        "text_analysis": text_analysis,
     }
 
 
 @app.post("/api/explode_pdf")
-def explode_pdf(req: FileRequest):
+def explode_pdf(req: PDFExplodeRequest):
     item = _get_file(req.file_id, "pdf")
     try:
-        records = pdf_to_images(item["path"], dpi=200)
+        with fitz.open(item["path"]) as doc:
+            original_count = len(doc)
+        requested = list(req.page_numbers or [])
+        if requested:
+            normalized: list[int] = []
+            seen: set[int] = set()
+            for raw_page in requested:
+                page_no = int(raw_page)
+                if page_no < 1 or page_no > original_count:
+                    raise ValueError(f"PDF page {page_no} is outside the document range 1-{original_count}.")
+                if page_no not in seen:
+                    seen.add(page_no)
+                    normalized.append(page_no)
+            normalized.sort()
+            page_indices = [p - 1 for p in normalized]
+        else:
+            normalized = list(range(1, original_count + 1))
+            page_indices = None
+
+        records = pdf_to_images(item["path"], dpi=200, page_indices=page_indices)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     pages = []
-    for i, record in enumerate(records):
+    for selection_index, record in enumerate(records):
+        source_index = int(record.get("page_index", selection_index))
+        source_page_number = source_index + 1
         page_id = _register_file(
             record["path"],
-            f"page_{i + 1:04d}.png",
+            f"page_{source_page_number:04d}.png",
             "page",
             parent_pdf_id=req.file_id,
-            page_index=i,
+            page_index=source_index,
             pixel_width=record["width"],
             pixel_height=record["height"],
             dpi=record["dpi"],
@@ -503,12 +596,20 @@ def explode_pdf(req: FileRequest):
         )
         pages.append({
             "file_id": page_id,
-            "page": i + 1,
+            "page": source_page_number,
+            "source_page": source_page_number,
+            "selection_index": selection_index + 1,
             "width": record["width"],
             "height": record["height"],
             "rotation": record["rotation"],
         })
-    return {"pages": pages, "count": len(pages)}
+    return {
+        "pages": pages,
+        "count": len(pages),
+        "selected_pages": normalized,
+        "selected_count": len(normalized),
+        "original_count": original_count,
+    }
 
 
 @app.get("/api/page_region/{file_id}")
@@ -661,6 +762,23 @@ def _register_pdf_download(path: str, filename: str) -> dict:
     }
 
 
+def _compact_page_selection(page_numbers: list[int]) -> str:
+    """Compact sorted 1-based pages to a readable filename-safe range string."""
+    nums = sorted({int(p) for p in page_numbers if int(p) > 0})
+    if not nums:
+        return ""
+    parts: list[str] = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        parts.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = n
+    parts.append(str(start) if start == prev else f"{start}-{prev}")
+    return "_".join(parts)
+
+
 @app.post("/api/make_pdf")
 def make_pdf(req: PDFBuildRequest):
     item = _get_file(req.pdf_id, "pdf")
@@ -668,9 +786,48 @@ def make_pdf(req: PDFBuildRequest):
     stem = Path(original_name).stem
     page_sources = _page_sources_for_pdf(req.pdf_id, req.page_ids)
 
+    requested_page_count = req.page_count
+    if requested_page_count is not None:
+        requested_page_count = max(0, int(requested_page_count))
+        if requested_page_count < 1:
+            raise HTTPException(status_code=400, detail="No completed OCR pages are available for PDF export.")
+        requested_page_count = min(requested_page_count, len(req.page_texts))
+        if req.page_ids:
+            requested_page_count = min(requested_page_count, len(req.page_ids))
+        if requested_page_count < 1:
+            raise HTTPException(status_code=400, detail="No completed OCR pages are available for PDF export.")
+
+    try:
+        with fitz.open(item["path"]) as _doc:
+            source_document_pages = len(_doc)
+    except Exception:
+        source_document_pages = int(req.original_total_pages or 0)
+
+    original_page_count = int(req.original_total_pages or source_document_pages or 0)
+    completed_page_numbers = [int(p) for p in (req.page_numbers or [])]
+    if not completed_page_numbers:
+        count = requested_page_count or len(req.page_texts)
+        completed_page_numbers = list(range(1, count + 1))
+    completed_page_numbers = completed_page_numbers[: requested_page_count or len(completed_page_numbers)]
+    if any(p < 1 or (source_document_pages and p > source_document_pages) for p in completed_page_numbers):
+        raise HTTPException(status_code=400, detail="Selected PDF page number is outside the source document range.")
+
+    selected_pages = sorted({int(p) for p in (req.selected_pages or completed_page_numbers)})
+    selected_total = int(req.total_pages or len(selected_pages) or len(completed_page_numbers))
+    if selected_total < len(completed_page_numbers):
+        selected_total = len(completed_page_numbers)
+
+    emitted_page_count = len(completed_page_numbers)
+    is_partial = emitted_page_count < selected_total
+    selection_compact = _compact_page_selection(completed_page_numbers)
+    all_pages_selected = bool(original_page_count and selected_total == original_page_count and selected_pages == list(range(1, original_page_count + 1)))
+    selection_tag = "" if all_pages_selected else (f"_pages_{selection_compact}" if selection_compact else f"_selected_{emitted_page_count}pages")
+    partial_tag = f"_partial_{emitted_page_count}of{selected_total}selected" if is_partial else ""
+    page_indices = [p - 1 for p in completed_page_numbers]
+
     if req.output_mode == "reconstructed":
         out_dir = Path(tempfile.mkdtemp(prefix="reconstructed_", dir=str(WORK_ROOT)))
-        output_name = _safe_name(f"{stem}_reconstructed.pdf", "reconstructed.pdf")
+        output_name = _safe_name(f"{stem}{selection_tag}{partial_tag}_reconstructed.pdf", "reconstructed.pdf")
         output_path = out_dir / output_name
         try:
             print(f"[PDF] Building reconstructed PDF for {original_name}…", flush=True)
@@ -679,20 +836,27 @@ def make_pdf(req: PDFBuildRequest):
                 page_ocr_texts=req.page_texts,
                 output_pdf=str(output_path),
                 page_sources=page_sources,
+                page_indices=page_indices,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not build reconstructed PDF: {exc}") from exc
 
         print(
             f"[PDF] Reconstructed ready · {stats.get('pages_with_ocr', 0)}/{stats.get('pages', 0)} pages · "
-            f"{stats.get('visible_text_blocks', 0)} visible text blocks · "
-            f"{stats.get('image_blocks', 0)} image blocks · "
+            f"{stats.get('precision_text_blocks', 0)} precision text blocks · "
+            f"{stats.get('precision_text_lines', 0)} detected text lines · "
+            f"avg text size {stats.get('precision_font_size_avg_pt', 0)} pt · "
+            f"{stats.get('image_blocks', 0)} exact image regions · "
+            f"{stats.get('table_precision_cells', 0)}/{stats.get('table_cells', 0)} precision table cells · "
+            f"{stats.get('table_math_cells', 0)} math-normalized cells · "
+            f"{stats.get('table_colored_cells', 0)} coloured cells · "
+            f"{stats.get('block_fit_fallbacks', 0)} text fallbacks · "
             f"{stats.get('image_fallback_blocks', 0)} visual fallbacks",
             flush=True,
         )
     else:
         out_dir = Path(tempfile.mkdtemp(prefix="searchable_", dir=str(WORK_ROOT)))
-        output_name = _safe_name(f"{stem}_searchable.pdf", "searchable.pdf")
+        output_name = _safe_name(f"{stem}{selection_tag}{partial_tag}_searchable.pdf", "searchable.pdf")
         output_path = out_dir / output_name
         try:
             print(f"[PDF] Building precise searchable scan for {original_name}…", flush=True)
@@ -701,22 +865,32 @@ def make_pdf(req: PDFBuildRequest):
                 page_ocr_texts=req.page_texts,
                 output_pdf=str(output_path),
                 page_sources=page_sources,
+                existing_text_policy=req.existing_text_policy,
+                page_indices=page_indices,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Could not build searchable scan: {exc}") from exc
 
         print(
-            f"[PDF] Searchable scan ready · {stats.get('pages_with_ocr', 0)}/{stats.get('pages', 0)} pages · "
-            f"{stats.get('image_refined_blocks', 0)} image-refined blocks · "
+            f"[PDF] Searchable scan ready · policy={stats.get('existing_text_policy', 'preserve')} · "
+            f"{stats.get('pages_with_ocr', 0)}/{stats.get('pages', 0)} OCR pages · "
+            f"native preserved={stats.get('native_text_preserved_pages', 0)} · "
+            f"native replaced={stats.get('native_text_replaced_pages', 0)} · "
+            f"OCR layer added={stats.get('ocr_layer_added_pages', 0)} · "
             f"{stats.get('image_refined_lines', 0)} detected text lines · "
             f"{stats.get('word_refined_words', 0)} word-refined words · "
-            f"{stats.get('box_fit_blocks', 0)} block-fit fallbacks · "
             f"{stats.get('fallback_blocks', 0)} unpositioned fallbacks",
             flush=True,
         )
 
+    stats["partial"] = is_partial
+    stats["completed_pages"] = emitted_page_count
+    stats["selected_pages_total"] = selected_total
+    stats["selected_page_numbers"] = completed_page_numbers
+    stats["original_pages"] = original_page_count
+
     info = _register_pdf_download(built_path, output_name)
-    return {**info, "output_mode": req.output_mode, "stats": stats}
+    return {**info, "output_mode": req.output_mode, "partial": is_partial, "stats": stats}
 
 
 @app.post("/api/make_searchable_pdf")
@@ -727,6 +901,12 @@ def make_searchable_pdf(req: SearchablePDFRequest):
         page_texts=req.page_texts,
         page_ids=req.page_ids,
         output_mode="searchable_scan",
+        existing_text_policy="preserve",
+        page_count=req.page_count,
+        total_pages=req.total_pages,
+        page_numbers=req.page_numbers,
+        selected_pages=req.selected_pages,
+        original_total_pages=req.original_total_pages,
     ))
 
 

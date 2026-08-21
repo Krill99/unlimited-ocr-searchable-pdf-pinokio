@@ -1,5 +1,5 @@
 {
   "title": "Unlimited OCR – Searchable PDF",
-  "description": "Local Baidu Unlimited-OCR with live rendered Markdown and optional Searchable Scan or Reconstructed PDF output.",
+  "description": "Local Baidu Unlimited-OCR with live rendered Markdown, precision Searchable Scan, and geometry-matched Reconstructed PDF output.",
   "icon": "icon.png"
 }

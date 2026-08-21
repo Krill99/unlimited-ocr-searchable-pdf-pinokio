@@ -10,6 +10,11 @@ import numpy as np
 from PIL import Image
 import pymupdf as fitz
 
+try:
+    from pdf_text_analysis import analyze_page_text
+except ImportError:
+    from app.pdf_text_analysis import analyze_page_text
+
 
 # Unlimited-OCR emits blocks such as:
 # <|det|>text [65, 90, 925, 148]<|/det|>Recognized text...
@@ -748,34 +753,89 @@ def _insert_unpositioned_fallback(page: fitz.Page, text: str) -> int:
         return 0
 
 
+def _flatten_page_for_text_replacement(
+    out_doc: fitz.Document,
+    source_page: fitz.Page,
+    source_record: dict | None = None,
+) -> tuple[fitz.Page, str]:
+    """Create a visually flattened page so the source PDF text layer is removed.
+
+    Prefer the exact 200-DPI raster already used for Unlimited-OCR. This keeps
+    OCR geometry and the flattened page in the same visual coordinate space.
+    If that raster is unavailable, render the source page at 300 DPI.
+    """
+    display_rect = source_page.rect
+    out_page = out_doc.new_page(width=display_rect.width, height=display_rect.height)
+    source_record = source_record or {}
+    raster_path = str(source_record.get("path") or "")
+    if raster_path and os.path.exists(raster_path):
+        out_page.insert_image(out_page.rect, filename=raster_path, keep_proportion=False)
+        return out_page, "ocr-raster"
+
+    pix = source_page.get_pixmap(dpi=300, alpha=False)
+    out_page.insert_image(out_page.rect, pixmap=pix, keep_proportion=False)
+    return out_page, "300-dpi-render"
+
+
 def build_searchable_pdf(
     input_pdf: str,
     page_ocr_texts: Iterable[str],
     output_pdf: str | None = None,
     page_sources: Sequence[dict] | None = None,
+    existing_text_policy: str = "preserve",
+    max_pages: int | None = None,
+    page_indices: Sequence[int] | None = None,
 ) -> tuple[str, dict]:
-    """
-    Copy the original PDF and add a geometry-fitted invisible OCR text layer.
+    """Build a searchable scan with explicit handling of pre-existing PDF text.
 
-    page_sources may contain the exact OCR raster metadata for each page:
-        {"width": int, "height": int, "path": str}
-    Only width/height are required for coordinate mapping.
+    existing_text_policy:
+      - ``preserve`` (default): keep original PDF text. If a page already has a
+        *usable* text layer, do not add a second Unlimited-OCR layer on that page.
+        Pages without usable native text still receive the Unlimited-OCR layer.
+      - ``replace``: if a page contains any existing extractable text, visually
+        flatten that page first (removing the old text/vector layer) and then add
+        the Unlimited-OCR text layer. Pages with no existing text are copied from
+        the original PDF unchanged before adding OCR text.
+
+    Replacement necessarily rasterizes pages that contain existing text. This is
+    the reliable way to remove the old searchable layer without erasing its
+    visible appearance.
     """
     page_ocr_texts = list(page_ocr_texts or [])
     page_sources = list(page_sources or [])
+    existing_text_policy = str(existing_text_policy or "preserve").strip().lower()
+    if existing_text_policy not in {"preserve", "replace"}:
+        raise ValueError("existing_text_policy must be 'preserve' or 'replace'.")
 
     if output_pdf is None:
         stem = os.path.splitext(os.path.basename(input_pdf))[0]
         out_dir = tempfile.mkdtemp(prefix="searchable_pdf_")
         output_pdf = os.path.join(out_dir, f"{stem}_searchable.pdf")
 
-    doc = fitz.open(input_pdf)
-    if doc.needs_pass:
-        doc.close()
+    source_doc = fitz.open(input_pdf)
+    if source_doc.needs_pass:
+        source_doc.close()
         raise ValueError("Password-protected PDFs are not supported.")
+    out_doc = fitz.open()
+
+    if page_indices is None:
+        selected_indices = list(range(len(source_doc)))
+        if max_pages is not None:
+            selected_indices = selected_indices[: max(0, int(max_pages))]
+    else:
+        selected_indices = [int(i) for i in page_indices]
+    if not selected_indices:
+        source_doc.close()
+        out_doc.close()
+        raise ValueError("No pages were selected for searchable PDF output.")
+    if any(i < 0 or i >= len(source_doc) for i in selected_indices):
+        source_doc.close()
+        out_doc.close()
+        raise ValueError("Selected page is outside the source PDF range.")
+    page_count = len(selected_indices)
 
     stats = {
-        "pages": len(doc),
+        "pages": page_count,
         "pages_with_ocr": 0,
         "positioned_blocks": 0,
         "positioned_lines": 0,
@@ -786,17 +846,38 @@ def build_searchable_pdf(
         "word_refined_words": 0,
         "box_fit_blocks": 0,
         "geometry": "image-guided-line-fit",
+        "existing_text_policy": existing_text_policy,
+        "existing_text_pages": 0,
+        "usable_existing_text_pages": 0,
+        "partial_existing_text_pages": 0,
+        "native_text_preserved_pages": 0,
+        "native_text_replaced_pages": 0,
+        "ocr_layer_added_pages": 0,
+        "ocr_layer_skipped_pages": 0,
+        "flattened_pages": 0,
+        "flatten_source_ocr_raster_pages": 0,
+        "flatten_source_300dpi_pages": 0,
     }
 
-    for page_index, page in enumerate(doc):
-        raw = page_ocr_texts[page_index] if page_index < len(page_ocr_texts) else ""
-        blocks = parse_ocr_blocks(raw)
-        if blocks:
-            stats["pages_with_ocr"] += 1
+    try:
+        for output_index, source_page_index in enumerate(selected_indices):
+            source_page = source_doc[source_page_index]
+            raw = page_ocr_texts[output_index] if output_index < len(page_ocr_texts) else ""
+            blocks = parse_ocr_blocks(raw)
+            if blocks:
+                stats["pages_with_ocr"] += 1
 
-        source_size: tuple[int, int] | None = None
-        if page_index < len(page_sources):
-            src = page_sources[page_index] or {}
+            native = analyze_page_text(source_page, source_page_index + 1)
+            if native.get("has_text"):
+                stats["existing_text_pages"] += 1
+            if native.get("usable"):
+                stats["usable_existing_text_pages"] += 1
+            elif native.get("has_text"):
+                stats["partial_existing_text_pages"] += 1
+
+            src = page_sources[output_index] if output_index < len(page_sources) else {}
+            src = src or {}
+            source_size: tuple[int, int] | None = None
             try:
                 sw, sh = int(src.get("width", 0)), int(src.get("height", 0))
                 if sw > 0 and sh > 0:
@@ -805,60 +886,84 @@ def build_searchable_pdf(
             except Exception:
                 source_size = None
 
-        source_image: Image.Image | None = None
-        if page_index < len(page_sources):
-            src_path = str((page_sources[page_index] or {}).get("path") or "")
+            source_image: Image.Image | None = None
+            src_path = str(src.get("path") or "")
             if src_path and os.path.exists(src_path):
                 try:
                     with Image.open(src_path) as source_file:
                         source_image = source_file.convert("RGB")
-                    # Use the actual image dimensions as source-of-truth if registry
-                    # metadata is missing or stale.
                     source_size = source_image.size
                 except Exception:
                     source_image = None
 
-        fallback_texts: list[str] = []
-        for block in blocks:
-            text = block.get("text", "")
-            bbox = block.get("bbox")
-            category = str(block.get("type") or "text").lower()
-            if bbox:
-                refined = False
-                if source_image is not None:
-                    refined_lines, refined_words, refined = _insert_image_refined_block(
-                        page, source_image, bbox, text, category
-                    )
-                    if refined:
-                        stats["positioned_blocks"] += 1
-                        stats["positioned_lines"] += refined_lines
-                        stats["image_refined_blocks"] += 1
-                        stats["image_refined_lines"] += refined_lines
-                        stats["word_refined_words"] += refined_words
-                if not refined:
-                    display_rect = _normalized_bbox_to_rotated_page_rect(page, bbox, source_size)
-                    inserted_lines = _insert_invisible_block(page, display_rect, text)
-                    if inserted_lines:
-                        stats["positioned_blocks"] += 1
-                        stats["positioned_lines"] += inserted_lines
-                        stats["box_fit_blocks"] += 1
+            preserve_native = existing_text_policy == "preserve" and bool(native.get("usable"))
+            replace_native = existing_text_policy == "replace" and bool(native.get("has_text"))
+
+            if replace_native:
+                page, flatten_source = _flatten_page_for_text_replacement(out_doc, source_page, src)
+                stats["native_text_replaced_pages"] += 1
+                stats["flattened_pages"] += 1
+                if flatten_source == "ocr-raster":
+                    stats["flatten_source_ocr_raster_pages"] += 1
+                else:
+                    stats["flatten_source_300dpi_pages"] += 1
+            else:
+                out_doc.insert_pdf(source_doc, from_page=source_page_index, to_page=source_page_index)
+                page = out_doc[-1]
+                if preserve_native:
+                    stats["native_text_preserved_pages"] += 1
+
+            # Avoid duplicate searchable text on pages where the existing native
+            # layer has been judged usable and the user selected Preserve.
+            add_ocr_layer = bool(blocks) and not preserve_native
+            if preserve_native and blocks:
+                stats["ocr_layer_skipped_pages"] += 1
+
+            if add_ocr_layer:
+                stats["ocr_layer_added_pages"] += 1
+                fallback_texts: list[str] = []
+                for block in blocks:
+                    text = block.get("text", "")
+                    bbox = block.get("bbox")
+                    category = str(block.get("type") or "text").lower()
+                    if bbox:
+                        refined = False
+                        if source_image is not None:
+                            refined_lines, refined_words, refined = _insert_image_refined_block(
+                                page, source_image, bbox, text, category
+                            )
+                            if refined:
+                                stats["positioned_blocks"] += 1
+                                stats["positioned_lines"] += refined_lines
+                                stats["image_refined_blocks"] += 1
+                                stats["image_refined_lines"] += refined_lines
+                                stats["word_refined_words"] += refined_words
+                        if not refined:
+                            display_rect = _normalized_bbox_to_rotated_page_rect(page, bbox, source_size)
+                            inserted_lines = _insert_invisible_block(page, display_rect, text)
+                            if inserted_lines:
+                                stats["positioned_blocks"] += 1
+                                stats["positioned_lines"] += inserted_lines
+                                stats["box_fit_blocks"] += 1
+                            else:
+                                fallback_texts.append(text)
                     else:
                         fallback_texts.append(text)
-            else:
-                fallback_texts.append(text)
 
-        if source_image is not None:
-            try:
-                source_image.close()
-            except Exception:
-                pass
+                if fallback_texts:
+                    joined = "\n".join(t for t in fallback_texts if t.strip())
+                    if _insert_unpositioned_fallback(page, joined):
+                        stats["fallback_blocks"] += len(fallback_texts)
 
-        if fallback_texts:
-            joined = "\n".join(t for t in fallback_texts if t.strip())
-            if _insert_unpositioned_fallback(page, joined):
-                stats["fallback_blocks"] += len(fallback_texts)
+            if source_image is not None:
+                try:
+                    source_image.close()
+                except Exception:
+                    pass
 
-    # Save as a new PDF; the original file is never overwritten.
-    doc.save(output_pdf, garbage=3, deflate=True)
-    doc.close()
+        out_doc.save(output_pdf, garbage=3, deflate=True)
+    finally:
+        out_doc.close()
+        source_doc.close()
+
     return output_pdf, stats

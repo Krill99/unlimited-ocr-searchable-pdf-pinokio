@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Unlimited OCR – Searchable PDF</title>
   <meta name="description" content="Local Unlimited-OCR interface with live rendered Markdown and optional PDF output." />
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css" />
+  <script src="/vendor/katex/katex.min.js"></script>
   <style>
     * { box-sizing:border-box; margin:0; padding:0; }
     :root {
@@ -77,6 +79,18 @@
     .prompt input { flex:1; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text);
       outline:none; padding:6px 9px; font:11px var(--mono); }
     .prompt input:focus { border-color:var(--accent); }
+    .page-select { display:none; flex-shrink:0; align-items:center; gap:9px; padding:8px 14px; background:#0d1118; border-top:1px solid var(--soft); }
+    .page-select.visible { display:flex; }
+    .page-select .page-label { min-width:72px; color:var(--muted); font:10px var(--mono); letter-spacing:.04em; }
+    .page-choice { position:relative; display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; color:var(--secondary); font:9px var(--mono); }
+    .page-choice input { accent-color:var(--blue); }
+    .page-range { flex:1; min-width:0; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); outline:none; padding:6px 9px; font:10px var(--mono); }
+    .page-range:focus { border-color:var(--blue); }
+    .page-range:disabled { opacity:.38; }
+    .page-range.invalid { border-color:var(--red); }
+    .page-summary { min-width:130px; max-width:220px; color:var(--muted); font:8px/1.3 var(--mono); text-align:right; }
+    .page-summary.good { color:#9ff3df; }
+    .page-summary.error { color:#ff8f8f; }
     .pdf-output { flex-shrink:0; display:flex; align-items:stretch; gap:8px; padding:9px 14px 11px;
       background:var(--surface); border-top:1px solid var(--soft); }
     .pdf-output .output-label { min-width:72px; display:flex; align-items:center; color:var(--muted);
@@ -98,6 +112,20 @@
     .output-choice.generate:has(input:checked) { border-color:var(--teal); background:rgba(0,212,170,.07); }
     .output-choice.generate:has(input:checked) .check { border-color:var(--teal); background:var(--teal); color:#03120f; }
     .pdf-output.disabled { opacity:.42; pointer-events:none; }
+    .text-layer-card { display:none; flex-shrink:0; padding:9px 14px 11px; background:#0d1118; border-top:1px solid var(--soft); gap:10px; align-items:stretch; }
+    .text-layer-card.visible { display:flex; }
+    .text-layer-summary { min-width:245px; flex:1.15; padding:8px 10px; border:1px solid var(--border); border-radius:7px; background:var(--bg); }
+    .text-layer-summary .eyebrow { font:600 9px var(--mono); color:var(--muted); letter-spacing:.05em; }
+    .text-layer-summary .headline { margin-top:4px; color:var(--secondary); font:600 10px/1.35 var(--mono); }
+    .text-layer-summary .detail { margin-top:3px; color:var(--muted); font:8px/1.35 var(--mono); }
+    .text-layer-summary.good { border-color:rgba(0,212,170,.45); }
+    .text-layer-summary.good .headline { color:#9ff3df; }
+    .text-layer-summary.mixed { border-color:rgba(255,190,70,.42); }
+    .text-layer-summary.none { border-color:rgba(74,158,255,.38); }
+    .text-policy { flex:2; display:flex; gap:8px; }
+    .text-policy .output-choice { min-width:0; }
+    .text-policy.disabled { opacity:.42; pointer-events:none; }
+    .text-policy-note { color:#ffcb7a !important; }
     #output { min-height:0; flex:1; overflow:auto; padding:16px 18px; white-space:pre-wrap;
       font:12px/1.65 var(--mono); color:var(--text); }
     #output.rendered { white-space:normal; font:13px/1.62 var(--ui); }
@@ -148,6 +176,11 @@
     .markdown-body .math-array-cell { display:table-cell; padding:.08em .45em; text-align:center; white-space:nowrap; }
     .markdown-body .math-array-row.hline .math-array-cell { border-top:1px solid currentColor; }
     .markdown-body .math-display .math-array { margin:.15em auto; }
+    .markdown-body .math-inline .katex { font-size:1.02em; }
+    .markdown-body .math-display .katex-display { margin:0; }
+    .markdown-body .math-display .katex { font-size:1.08em; }
+    .markdown-body .math-fallback { color:#f1f4fb; font-family:Cambria Math,"Times New Roman",serif; }
+    .markdown-body .math-render-warning { color:#ffcb7a; font:9px var(--mono); margin-top:.35em; }
     .placeholder { height:100%; display:grid; place-items:center; color:var(--muted); text-align:center; }
     .placeholder div { line-height:1.8; }
     .page-head { margin:12px 0 6px; color:var(--muted); font:9px var(--mono); border-bottom:1px solid var(--soft);
@@ -214,6 +247,13 @@
         <div id="pdf-wrap"><iframe id="pdf-preview" title="PDF preview"></iframe></div>
       </div>
       <div class="prompt"><label>PROMPT</label><input id="prompt" value="document parsing."></div>
+      <div class="page-select" id="page-select">
+        <div class="page-label">PAGES TO OCR</div>
+        <label class="page-choice"><input type="radio" name="page-selection-mode" value="all" checked> ALL</label>
+        <label class="page-choice"><input type="radio" name="page-selection-mode" value="custom"> SELECT</label>
+        <input class="page-range" id="page-range" type="text" placeholder="e.g. 1-5, 8, 10-12" disabled spellcheck="false">
+        <div class="page-summary" id="page-summary">All pages</div>
+      </div>
       <div class="pdf-output disabled" id="pdf-output-options">
         <div class="output-label">PDF OUTPUT</div>
         <label class="output-choice generate" title="PDF generation is optional. Leave this unticked for OCR text only.">
@@ -231,6 +271,25 @@
           <span class="check">✓</span>
           <span class="choice-copy"><div class="choice-title">RECONSTRUCTED PDF</div><div class="choice-sub">Visible OCR text + real tables + typeset equations + images</div></span>
         </label>
+      </div>
+      <div class="text-layer-card" id="text-layer-card">
+        <div class="text-layer-summary" id="text-layer-summary">
+          <div class="eyebrow">EXISTING PDF TEXT</div>
+          <div class="headline" id="text-layer-headline">Checking existing searchable text…</div>
+          <div class="detail" id="text-layer-detail">The PDF text layer is analyzed locally before OCR.</div>
+        </div>
+        <div class="text-policy disabled" id="text-policy-options">
+          <label class="output-choice" title="Keep usable existing PDF text and avoid adding a duplicate OCR layer on those pages.">
+            <input type="radio" name="existing-text-policy" value="preserve" checked>
+            <span class="check">✓</span>
+            <span class="choice-copy"><div class="choice-title">PRESERVE EXISTING TEXT</div><div class="choice-sub">Recommended · keep usable native text; add Unlimited-OCR only where needed</div></span>
+          </label>
+          <label class="output-choice" title="Remove the old searchable text by flattening pages that contain it, then add the Unlimited-OCR detection text layer.">
+            <input type="radio" name="existing-text-policy" value="replace">
+            <span class="check">✓</span>
+            <span class="choice-copy"><div class="choice-title">REPLACE WITH UNLIMITED-OCR</div><div class="choice-sub text-policy-note">Removes old text layer · pages containing old text are rasterized, then our OCR text is written</div></span>
+          </label>
+        </div>
       </div>
     </section>
 
@@ -264,6 +323,13 @@
   let isPDF = false;
   let isRunning = false;
   let stopRequested = false;
+  let currentPhase = "idle";
+  let currentPDFPageNumber = 0;
+  let currentPDFTotalPages = 0;
+  let currentPDFSelectedPosition = 0;
+  let currentPDFSelectedTotal = 0;
+  let pdfDocumentTotalPages = 0;
+  let pageSelectionMode = 'all';
   let currentMode = "long";
   let currentOutputMode = "searchable_scan";
   let generatePDF = false;
@@ -274,6 +340,11 @@
   let lastPdfBuildContext = null;
   let isBuildingPDF = false;
   let outputView = "rendered";
+  let existingTextPolicy = "preserve";
+  let pdfTextAnalysis = null;
+  let uploadedFileInfo = null;
+  let uploadPromise = null;
+  let fileSelectionToken = 0;
 
   const el = id => document.getElementById(id);
 
@@ -306,13 +377,137 @@
     el('mode-meta').textContent = m.toUpperCase();
   };
 
+  function parsePageSelectionSpec(spec, totalPages) {
+    const total = Number(totalPages || 0);
+    if (!Number.isInteger(total) || total < 1) throw new Error('PDF page count is not available yet.');
+    const text = String(spec || '').trim();
+    if (!text) throw new Error('Enter a page or range, for example 3-12 or 1-3, 7, 10-15.');
+    const selected = new Set();
+    for (const rawPart of text.split(',')) {
+      const part = rawPart.trim();
+      if (!part) continue;
+      let m = part.match(/^(\d+)$/);
+      if (m) {
+        const p = Number(m[1]);
+        if (p < 1 || p > total) throw new Error(`Page ${p} is outside 1-${total}.`);
+        selected.add(p);
+        continue;
+      }
+      m = part.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (!m) throw new Error(`Invalid page selection: "${part}".`);
+      const start = Number(m[1]), end = Number(m[2]);
+      if (start > end) throw new Error(`Range ${start}-${end} is reversed.`);
+      if (start < 1 || end > total) throw new Error(`Range ${start}-${end} is outside 1-${total}.`);
+      for (let p=start; p<=end; p++) selected.add(p);
+    }
+    const pages = [...selected].sort((a,b) => a-b);
+    if (!pages.length) throw new Error('No PDF pages were selected.');
+    return pages;
+  }
+
+  function compactPageSelection(pages) {
+    const nums = [...new Set((pages || []).map(Number).filter(Number.isFinite))].sort((a,b)=>a-b);
+    if (!nums.length) return '';
+    const parts=[]; let start=nums[0], prev=nums[0];
+    for (const n of nums.slice(1)) {
+      if (n === prev + 1) { prev=n; continue; }
+      parts.push(start === prev ? String(start) : `${start}-${prev}`); start=prev=n;
+    }
+    parts.push(start === prev ? String(start) : `${start}-${prev}`);
+    return parts.join(', ');
+  }
+
+  function selectedPagesForOCR() {
+    if (!isPDF) return [];
+    if (pageSelectionMode === 'all') return Array.from({length:pdfDocumentTotalPages}, (_,i)=>i+1);
+    return parsePageSelectionSpec(el('page-range').value, pdfDocumentTotalPages);
+  }
+
+  function updatePageSelectionUI() {
+    const card = el('page-select');
+    if (!isPDF) { card.classList.remove('visible'); return true; }
+    card.classList.add('visible');
+    const custom = pageSelectionMode === 'custom';
+    el('page-range').disabled = !custom || isRunning;
+    document.querySelectorAll('input[name="page-selection-mode"]').forEach(r => { r.disabled = isRunning || pdfDocumentTotalPages < 1; });
+    const summary = el('page-summary');
+    el('page-range').classList.remove('invalid'); summary.classList.remove('good','error');
+    if (pdfDocumentTotalPages < 1) { summary.textContent = 'Waiting for page count…'; return false; }
+    try {
+      const pages = selectedPagesForOCR();
+      summary.textContent = pages.length === pdfDocumentTotalPages
+        ? `All ${pdfDocumentTotalPages} pages`
+        : `${pages.length} selected · ${compactPageSelection(pages)}`;
+      summary.classList.add('good');
+      return pages.length > 0;
+    } catch (err) {
+      summary.textContent = err.message || String(err);
+      summary.classList.add('error');
+      el('page-range').classList.add('invalid');
+      return false;
+    }
+  }
+
+  document.querySelectorAll('input[name="page-selection-mode"]').forEach(radio => {
+    radio.addEventListener('change', e => {
+      if (!e.target.checked) return;
+      pageSelectionMode = e.target.value === 'custom' ? 'custom' : 'all';
+      updatePageSelectionUI();
+      if (!isRunning) el('start-btn').disabled = !currentFile || (isPDF && !updatePageSelectionUI());
+    });
+  });
+  el('page-range').addEventListener('input', () => {
+    const valid = updatePageSelectionUI();
+    if (!isRunning) el('start-btn').disabled = !currentFile || !valid;
+  });
+
   function updatePDFModeControls() {
     const canChooseMode = isPDF && generatePDF && !isRunning && !isBuildingPDF;
     document.querySelectorAll('input[name="pdf-output-mode"]').forEach(r => { r.disabled = !canChooseMode; });
     document.querySelectorAll('[data-pdf-mode-choice]').forEach(card => card.classList.toggle('mode-disabled', !canChooseMode));
+    const canChooseTextPolicy = canChooseMode && currentOutputMode === 'searchable_scan' && !!pdfTextAnalysis?.has_any_text;
+    document.querySelectorAll('input[name="existing-text-policy"]').forEach(r => { r.disabled = !canChooseTextPolicy; });
+    el('text-policy-options').classList.toggle('disabled', !canChooseTextPolicy);
     el('pdf-mode-meta').textContent = generatePDF
       ? (currentOutputMode === 'reconstructed' ? 'RECONSTRUCTED' : 'SEARCHABLE SCAN')
       : 'OFF';
+  }
+
+  function renderPDFTextAnalysis(analysis) {
+    pdfTextAnalysis = analysis || null;
+    if (!isPDF) { el('text-layer-card').classList.remove('visible'); el('page-select').classList.remove('visible'); return; }
+    el('text-layer-card').classList.add('visible');
+    const box = el('text-layer-summary');
+    box.classList.remove('good','mixed','none');
+    const total = Number(analysis?.pages || pdfDocumentTotalPages || 0);
+    pdfDocumentTotalPages = total;
+    updatePageSelectionUI();
+    const usable = Number(analysis?.usable_pages || 0);
+    const partial = Number(analysis?.partial_pages || 0);
+    const none = Number(analysis?.no_text_pages || 0);
+    const textPages = Number(analysis?.text_pages || 0);
+    let headline = 'Could not determine existing PDF text quality.';
+    let detail = analysis?.warning ? String(analysis.warning) : 'You can still OCR the document normally.';
+    if (analysis?.overall === 'all_usable') {
+      box.classList.add('good');
+      headline = `Usable searchable text detected on all ${total} page${total === 1 ? '' : 's'}.`;
+      detail = 'Searchable Scan can preserve the existing native text or replace it with Unlimited-OCR.';
+    } else if (analysis?.overall === 'mixed') {
+      box.classList.add('mixed');
+      headline = `Usable searchable text detected on ${usable} of ${total} pages.`;
+      detail = `${partial} page${partial === 1 ? '' : 's'} have sparse/low-quality text · ${none} page${none === 1 ? '' : 's'} have no text.`;
+    } else if (analysis?.overall === 'text_not_usable') {
+      box.classList.add('mixed');
+      headline = `An existing text layer was found on ${textPages} page${textPages === 1 ? '' : 's'}, but it does not look reliably usable.`;
+      detail = 'Preserve keeps that layer; Replace removes it and uses Unlimited-OCR as the searchable text source.';
+    } else if (analysis?.overall === 'no_text') {
+      box.classList.add('none');
+      headline = 'No usable searchable text detected in this PDF.';
+      detail = 'Searchable Scan will add the Unlimited-OCR text layer. There is no existing text layer to replace.';
+    }
+    el('text-layer-headline').textContent = headline;
+    el('text-layer-detail').textContent = detail;
+    updatePDFModeControls();
   }
 
   function setOutputOptionsEnabled(enabled) {
@@ -355,6 +550,17 @@
     });
   });
 
+  document.querySelectorAll('input[name="existing-text-policy"]').forEach(radio => {
+    radio.addEventListener('change', async e => {
+      if (!e.target.checked) return;
+      existingTextPolicy = e.target.value === 'replace' ? 'replace' : 'preserve';
+      if (generatePDF && currentOutputMode === 'searchable_scan' && lastPdfBuildContext && !isRunning && !isBuildingPDF) {
+        try { await buildSelectedPDF(lastPdfBuildContext); }
+        catch (err) { showError(err.message || String(err)); }
+      }
+    });
+  });
+
   el('file-input').addEventListener('change', e => { if (e.target.files?.[0]) loadFile(e.target.files[0]); });
   const dz = el('drop-zone');
   dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
@@ -364,13 +570,20 @@
     if (e.dataTransfer.files?.[0]) loadFile(e.dataTransfer.files[0]);
   });
 
-  function loadFile(file) {
+  async function loadFile(file) {
+    if (currentAbort) { try { currentAbort.abort(); } catch (_) {} currentAbort = null; }
+    const selectionToken = ++fileSelectionToken;
     currentFile = file;
     isPDF = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     generatedDownloadUrl = null; generatedFilename = null; outputText = ''; lastPdfBuildContext = null;
+    uploadedFileInfo = null; uploadPromise = null; pdfTextAnalysis = null; existingTextPolicy = 'preserve';
     generatePDF = false; currentOutputMode = 'searchable_scan';
+    pdfDocumentTotalPages = 0; pageSelectionMode = 'all';
+    el('page-range').value = '';
+    document.querySelector('input[name="page-selection-mode"][value="all"]').checked = true;
     el('generate-pdf').checked = false;
     document.querySelector('input[name="pdf-output-mode"][value="searchable_scan"]').checked = true;
+    document.querySelector('input[name="existing-text-policy"][value="preserve"]').checked = true;
 
     if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
     currentObjectUrl = URL.createObjectURL(file);
@@ -392,8 +605,35 @@
       el('image-preview').src = currentObjectUrl;
       el('image-preview').style.display = 'block';
     }
-    status('idle', 'READY · ' + file.name);
-    el('start-btn').disabled = false;
+    if (isPDF) {
+      el('text-layer-card').classList.add('visible');
+      el('text-layer-summary').classList.remove('good','mixed','none');
+      el('text-layer-headline').textContent = 'Checking existing searchable text…';
+      el('text-layer-detail').textContent = 'Analyzing the PDF text layer locally before OCR.';
+      el('text-policy-options').classList.add('disabled');
+      el('start-btn').disabled = true;
+      status('running', 'ANALYZING EXISTING PDF TEXT…');
+      try {
+        const uploaded = await uploadCurrentFile();
+        if (selectionToken !== fileSelectionToken || currentFile !== file) return;
+        pdfDocumentTotalPages = Number(uploaded.pdf_pages || uploaded.text_analysis?.pages || 0);
+        renderPDFTextAnalysis(uploaded.text_analysis);
+        updatePageSelectionUI();
+        status('idle', 'READY · ' + file.name);
+      } catch (err) {
+        if (selectionToken !== fileSelectionToken || currentFile !== file) return;
+        renderPDFTextAnalysis({overall:'analysis_error', warning:err.message || String(err)});
+        status('idle', 'READY · text analysis unavailable');
+      } finally {
+        currentAbort = null;
+        el('start-btn').disabled = isPDF && !updatePageSelectionUI();
+      }
+    } else {
+      el('text-layer-card').classList.remove('visible');
+      el('page-select').classList.remove('visible');
+      status('idle', 'READY · ' + file.name);
+      el('start-btn').disabled = false;
+    }
   }
 
   const OCR_VISUAL_TYPES = new Set([
@@ -461,7 +701,8 @@
     sigma:'σ', varsigma:'ς', tau:'τ', upsilon:'υ', phi:'φ', varphi:'ϕ', chi:'χ', psi:'ψ', omega:'ω',
     Gamma:'Γ', Delta:'Δ', Theta:'Θ', Lambda:'Λ', Xi:'Ξ', Pi:'Π', Sigma:'Σ', Upsilon:'Υ', Phi:'Φ', Psi:'Ψ', Omega:'Ω',
     infty:'∞', times:'×', cdot:'·', pm:'±', mp:'∓', leq:'≤', le:'≤', geq:'≥', ge:'≥', neq:'≠', approx:'≈', sim:'∼',
-    propto:'∝', rightarrow:'→', to:'→', leftarrow:'←', leftrightarrow:'↔', degree:'°', circ:'°', partial:'∂', nabla:'∇',
+    propto:'∝', rightarrow:'→', Rightarrow:'⇒', Leftarrow:'⇐', Leftrightarrow:'⇔', to:'→', leftarrow:'←', leftrightarrow:'↔',
+    mapsto:'↦', implies:'⇒', iff:'⇔', degree:'°', circ:'°', partial:'∂', nabla:'∇',
     sum:'∑', prod:'∏', int:'∫'
   };
 
@@ -471,6 +712,45 @@
       .replace(/\\?endarray\b/gi, '\\end{array}')
       .replace(/\\begin\s+array\b/gi, '\\begin{array}')
       .replace(/\\end\s+array\b/gi, '\\end{array}');
+  }
+
+  function repairOcrLatex(raw) {
+    let x = normalizeArraySyntax(String(raw || '').trim());
+    // Common OCR omissions: \text word, \mathrm word, \operatorname word.
+    // Repair one compact token conservatively instead of guessing across operators.
+    x = x.replace(/\\(text|mathrm|mathbf|mathit|operatorname)\s+(?!\{)([A-Za-z][A-Za-z0-9_.°%-]*)/g, '\\$1{$2}');
+    // Repair common environment spelling where braces around the environment name were lost.
+    x = x.replace(/\\begin\s+(aligned|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix)\b/g, '\\begin{$1}');
+    x = x.replace(/\\end\s+(aligned|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix)\b/g, '\\end{$1}');
+    return x;
+  }
+
+  function renderLatex(raw, displayMode=false) {
+    const source = repairOcrLatex(raw);
+    if (window.katex && typeof window.katex.renderToString === 'function') {
+      try {
+        return window.katex.renderToString(source, {
+          displayMode,
+          throwOnError: true,
+          strict: 'ignore',
+          trust: false,
+          output: 'htmlAndMathml',
+          macros: { '\\RR': '\\mathbb{R}' }
+        });
+      } catch (err) {
+        console.debug('KaTeX fallback for OCR math:', err && err.message ? err.message : err, source);
+      }
+    }
+    // Offline/malformed fallback: preserve the previous lightweight renderer.
+    return `<span class="math-fallback">${latexLite(source)}</span>`;
+  }
+
+  function isLikelyBareLatexEquation(text) {
+    const t = String(text || '').trim();
+    if (!t || t.length > 1500) return false;
+    if (/\\begin\s*\{?(?:array|aligned|cases|matrix|pmatrix|bmatrix|vmatrix|Vmatrix)\}?/i.test(t)) return true;
+    if (/\\(?:frac|dfrac|sqrt|sum|prod|int|Rightarrow|Leftarrow|Leftrightarrow|rightarrow|leftarrow|Delta|theta|lambda|mu|sigma|omega|text|mathrm|operatorname)\b/.test(t) && /(?:=|<|>|\\Rightarrow|\\rightarrow|\\frac|\\begin)/.test(t)) return true;
+    return false;
   }
 
   function latexLiteCore(raw) {
@@ -571,14 +851,16 @@
       imageStash.push({key, html}); return key;
     });
     x = x.replace(/\\begin\{array\}\s*(?:\{([^{}]*)\})?([\s\S]*?)\\end\{array\}/g, (whole) => {
-      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${latexLite(whole)}</span>`}); return key;
+      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${renderLatex(whole, false)}</span>`}); return key;
     });
     x = x.replace(/\\\(([\s\S]*?)\\\)/g, (_, math) => {
-      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${latexLite(math)}</span>`}); return key;
+      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${renderLatex(math, false)}</span>`}); return key;
     });
     x = x.replace(/\$([^$\n]+)\$/g, (_, math) => {
-      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${latexLite(math)}</span>`}); return key;
+      const key = `@@MATH${mathStash.length}@@`; mathStash.push({key, html:`<span class="math-inline">${renderLatex(math, false)}</span>`}); return key;
     });
+    x = x.replace(/\\(?:text|mathrm|mathbf|mathit|operatorname)\s*\{([^{}]*)\}/g, '$1');
+    x = x.replace(/\\(?:text|mathrm|mathbf|mathit|operatorname)\s+(?!\{)([A-Za-z][A-Za-z0-9_.°%-]*)/g, '$1');
     x = escapeHTML(x);
     x = x.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="${escapeHTML(safeUrl(url))}" target="_blank" rel="noopener noreferrer">${label}</a>`);
     x = x.replace(/\\([A-Za-z]+)/g, (m, name) => MATH_SYMBOLS[name] ?? m);
@@ -626,7 +908,7 @@
       codeLines = []; codeLang = '';
     };
     const flushMath = () => {
-      out.push(`<div class="math-display">${latexLite(mathLines.join(' '))}</div>`);
+      out.push(`<div class="math-display">${renderLatex(mathLines.join(' '), true)}</div>`);
       mathLines = [];
     };
 
@@ -647,15 +929,20 @@
       if (/^\\\[/.test(t)) {
         flushParagraph(); closeList();
         const rest=t.replace(/^\\\[/,'');
-        if (/\\\]\s*$/.test(rest)) out.push(`<div class="math-display">${latexLite(rest.replace(/\\\]\s*$/,''))}</div>`);
+        if (/\\\]\s*$/.test(rest)) out.push(`<div class="math-display">${renderLatex(rest.replace(/\\\]\s*$/,''), true)}</div>`);
         else { inDisplayMath=true; mathLines=[rest]; }
         continue;
       }
       if (/^\$\$/.test(t)) {
         flushParagraph(); closeList();
         const rest=t.replace(/^\$\$/,'');
-        if (/\$\$\s*$/.test(rest)) out.push(`<div class="math-display">${latexLite(rest.replace(/\$\$\s*$/,''))}</div>`);
+        if (/\$\$\s*$/.test(rest)) out.push(`<div class="math-display">${renderLatex(rest.replace(/\$\$\s*$/,''), true)}</div>`);
         else { inDisplayMath=true; mathLines=[rest]; }
+        continue;
+      }
+      if (isLikelyBareLatexEquation(t)) {
+        flushParagraph(); closeList();
+        out.push(`<div class="math-display">${renderLatex(t, true)}</div>`);
         continue;
       }
       if (/^@@HTMLTABLE\d+@@$/.test(t)) { flushParagraph(); closeList(); out.push(t); continue; }
@@ -720,10 +1007,15 @@
 
 
   async function uploadCurrentFile() {
+    if (uploadedFileInfo) return uploadedFileInfo;
+    if (uploadPromise) return uploadPromise;
     const form = new FormData();
     form.append('file', currentFile, currentFile.name);
     currentAbort = new AbortController();
-    return apiJSON('/api/upload', { method:'POST', body:form, signal:currentAbort.signal });
+    uploadPromise = apiJSON('/api/upload', { method:'POST', body:form, signal:currentAbort.signal })
+      .then(info => { uploadedFileInfo = info; return info; })
+      .finally(() => { uploadPromise = null; });
+    return uploadPromise;
   }
 
   async function streamOCR(fileId, prompt, mode, onResult, pageNumber=null, totalPages=null, onDelta=null) {
@@ -744,7 +1036,6 @@
     let finalRaw = '';
 
     while (true) {
-      if (stopRequested) { try { reader.cancel(); } catch (_) {} return finalRaw; }
       const {done, value} = await reader.read();
       buffer += decoder.decode(value || new Uint8Array(), {stream:!done});
       const lines = buffer.split('\n');
@@ -774,7 +1065,7 @@
 
   window.startOCR = async () => {
     if (!currentFile || isRunning) return;
-    isRunning = true; stopRequested = false; outputText = '';
+    isRunning = true; stopRequested = false; currentPhase = 'prepare'; currentPDFPageNumber = 0; currentPDFTotalPages = 0; currentPDFSelectedPosition = 0; currentPDFSelectedTotal = 0; outputText = '';
     generatedDownloadUrl = null; generatedFilename = null;
     el('download-btn').disabled = true;
     el('download-card').classList.remove('visible');
@@ -783,29 +1074,37 @@
     el('copy-btn').disabled = true;
     el('output-tag').textContent = 'RUNNING';
     setOutputOptionsEnabled(false);
+    updatePageSelectionUI();
     clearOutput(); setProgress(2);
 
     const prompt = el('prompt').value || 'document parsing.';
     const mode = currentMode === 'long' ? 'gundam' : 'base';
+    let selectedPages = [];
 
     try {
-      status('running', 'UPLOADING…');
+      if (isPDF) selectedPages = selectedPagesForOCR();
+      currentPhase = 'upload';
+      status('running', uploadedFileInfo ? 'PREPARING OCR…' : 'UPLOADING…');
       const uploaded = await uploadCurrentFile();
-      if (isPDF) await runPDF(uploaded.file_id, prompt, mode);
+      if (isPDF) await runPDF(uploaded.file_id, prompt, mode, selectedPages);
       else await runImage(uploaded.file_id, prompt, mode);
     } catch (e) {
       if (e.name === 'AbortError' || stopRequested) stopped();
       else showError(e.message || String(e));
     } finally {
       currentAbort = null;
+      currentPhase = 'idle';
+      currentPDFPageNumber = 0; currentPDFTotalPages = 0; currentPDFSelectedPosition = 0; currentPDFSelectedTotal = 0;
       isRunning = false;
-      el('start-btn').disabled = false;
       el('stop-btn').disabled = true;
       setOutputOptionsEnabled(isPDF);
+      const selectionValid = updatePageSelectionUI();
+      el('start-btn').disabled = !currentFile || (isPDF && !selectionValid);
     }
   };
 
   async function runImage(fileId, prompt, mode) {
+    currentPhase = 'ocr-image';
     status('running', 'RUNNING OCR…');
     let liveRaw = '';
     const raw = await streamOCR(fileId, prompt, mode, (r, meta) => {
@@ -821,27 +1120,37 @@
     done(outputText);
   }
 
-  async function runPDF(pdfId, prompt, mode) {
+  async function runPDF(pdfId, prompt, mode, selectedPages) {
+    currentPhase = 'explode';
     status('running', 'EXTRACTING PDF PAGES…');
     currentAbort = new AbortController();
     const exploded = await apiJSON('/api/explode_pdf', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({file_id:pdfId}), signal:currentAbort.signal
+      body:JSON.stringify({file_id:pdfId, page_numbers:selectedPages}), signal:currentAbort.signal
     });
     const pages = exploded.pages || [];
     if (!pages.length) throw new Error('No pages found in PDF.');
 
+    const originalTotalPages = Number(exploded.original_count || pdfDocumentTotalPages || pages.length);
+    const normalizedSelection = (exploded.selected_pages || selectedPages || pages.map(p => p.page)).map(Number);
+    currentPDFTotalPages = originalTotalPages;
+    currentPDFSelectedTotal = pages.length;
     const pageRawTexts = new Array(pages.length).fill('');
     const pageCleanTexts = new Array(pages.length).fill('');
     const out = el('output'); out.innerHTML = '';
+    let completedPages = 0;
 
     for (let i=0; i<pages.length; i++) {
-      if (stopRequested) return stopped();
-      status('running', `OCR · PAGE ${i+1} / ${pages.length}`);
+      if (stopRequested) break;
+      currentPhase = 'ocr-page';
+      const sourcePageNumber = Number(pages[i].page || pages[i].source_page || (i + 1));
+      currentPDFPageNumber = sourcePageNumber;
+      currentPDFSelectedPosition = i + 1;
+      status('running', `OCR · PDF PAGE ${sourcePageNumber}/${originalTotalPages} · SELECTED ${i+1}/${pages.length}`);
       setProgress(Math.max(4, Math.round((i / pages.length) * 90)));
 
       const head = document.createElement('div');
-      head.className = 'page-head'; head.textContent = `── PAGE ${i+1} / ${pages.length} ──`;
+      head.className = 'page-head'; head.textContent = `── PDF PAGE ${sourcePageNumber} / ${originalTotalPages} · SELECTED ${i+1} / ${pages.length} ──`;
       const body = document.createElement('div');
       body.className = 'working ocr-page-body'; body.dataset.markdown = ''; body.textContent = 'running OCR…';
       out.append(head, body); out.scrollTop = out.scrollHeight;
@@ -854,9 +1163,9 @@
         const elapsed = meta?.elapsed_seconds ?? ((performance.now() - pageStarted) / 1000);
         const blocks = meta?.detected_blocks;
         renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)', displayMarkdownFromRaw(r, pages[i].file_id) || '(no text detected)');
-        head.textContent = `── PAGE ${i+1} / ${pages.length} · ${elapsed.toFixed(1)}s${Number.isFinite(blocks) ? ` · ${blocks} blocks` : ''} ──`;
+        head.textContent = `── PDF PAGE ${sourcePageNumber} / ${originalTotalPages} · SELECTED ${i+1} / ${pages.length} · ${elapsed.toFixed(1)}s${Number.isFinite(blocks) ? ` · ${blocks} blocks` : ''} ──`;
         out.scrollTop = out.scrollHeight;
-      }, i + 1, pages.length, (() => {
+      }, sourcePageNumber, originalTotalPages, (() => {
         let liveRaw = '';
         return delta => {
           liveRaw += delta || '';
@@ -865,21 +1174,65 @@
           out.scrollTop = out.scrollHeight;
         };
       })());
+
       pageRawTexts[i] = raw;
       pageCleanTexts[i] = cleanForDisplay(raw);
       body.className = 'ocr-page-body';
       renderMarkdownInto(body, pageCleanTexts[i] || '(no text detected)', displayMarkdownFromRaw(raw, pages[i].file_id) || '(no text detected)');
-      setProgress(Math.max(4, Math.round(((i + 1) / pages.length) * 90)));
+      completedPages = i + 1;
+      setProgress(Math.max(4, Math.round((completedPages / pages.length) * 90)));
+
+      // STOP on a PDF is deliberately graceful: finish the current page so its
+      // OCR result is complete, then stop before beginning the next page.
+      if (stopRequested) break;
     }
 
-    outputText = pageCleanTexts.join('\n\n');
+    outputText = pageCleanTexts.slice(0, completedPages).join('\n\n');
     el('copy-btn').disabled = !outputText;
-    if (stopRequested) return stopped();
 
+    if (completedPages > 0) {
+      lastPdfBuildContext = {
+        pdfId,
+        pageRawTexts: pageRawTexts.slice(0, completedPages),
+        pageIds: pages.slice(0, completedPages).map(p => p.file_id),
+        pageNumbers: pages.slice(0, completedPages).map(p => Number(p.page || p.source_page)),
+        selectedPages: normalizedSelection,
+        textAnalysis: pdfTextAnalysis,
+        pageCount: completedPages,
+        totalPages: pages.length,
+        originalTotalPages,
+        partial: completedPages < pages.length,
+      };
+    } else {
+      lastPdfBuildContext = null;
+    }
+
+    if (stopRequested) {
+      currentPhase = 'stopped';
+      if (completedPages < 1) {
+        stopped(0, pages.length, false);
+        return;
+      }
+      if (generatePDF) {
+        await buildSelectedPDF(lastPdfBuildContext);
+      } else {
+        stopped(completedPages, pages.length, true);
+      }
+      return;
+    }
+
+    // Full document completed.
     lastPdfBuildContext = {
       pdfId,
       pageRawTexts: [...pageRawTexts],
       pageIds: pages.map(p => p.file_id),
+      pageNumbers: pages.map(p => Number(p.page || p.source_page)),
+      selectedPages: normalizedSelection,
+      textAnalysis: pdfTextAnalysis,
+      pageCount: pages.length,
+      totalPages: pages.length,
+      originalTotalPages,
+      partial: false,
     };
     if (generatePDF) await buildSelectedPDF(lastPdfBuildContext);
     else done(outputText, false);
@@ -892,7 +1245,9 @@
     const requestedMode = currentOutputMode;
     const reconstructed = requestedMode === 'reconstructed';
     try {
-      status('running', reconstructed ? 'BUILDING RECONSTRUCTED PDF…' : 'BUILDING SEARCHABLE SCAN…');
+      currentPhase = 'pdf-build';
+      const partialPrefix = ctx.partial ? `PARTIAL ${ctx.pageCount}/${ctx.totalPages} SELECTED · ` : '';
+      status('running', partialPrefix + (reconstructed ? 'BUILDING RECONSTRUCTED PDF…' : 'BUILDING SEARCHABLE SCAN…'));
       setProgress(94);
       el('download-btn').disabled = true;
       el('download-card').classList.remove('visible');
@@ -904,7 +1259,13 @@
           pdf_id:ctx.pdfId,
           page_texts:ctx.pageRawTexts,
           page_ids:ctx.pageIds,
-          output_mode:requestedMode
+          output_mode:requestedMode,
+          existing_text_policy: existingTextPolicy,
+          page_count: ctx.pageCount || null,
+          total_pages: ctx.totalPages || null,
+          page_numbers: ctx.pageNumbers || [],
+          selected_pages: ctx.selectedPages || ctx.pageNumbers || [],
+          original_total_pages: ctx.originalTotalPages || null
         }),
         signal:currentAbort.signal
       });
@@ -914,17 +1275,25 @@
       generatedFilename = info.filename || (reconstructed ? 'reconstructed.pdf' : 'searchable.pdf');
       el('download-title').textContent = generatedFilename + ' is ready';
       const s = info.stats || {};
+      const selectionLabel = (ctx.selectedPages?.length && ctx.originalTotalPages && ctx.selectedPages.length < ctx.originalTotalPages) ? `Selected ${compactPageSelection(ctx.selectedPages)} · ` : '';
+      const partialLabel = (info.partial || ctx.partial) ? `Partial ${ctx.pageCount}/${ctx.totalPages} selected pages · source ${compactPageSelection(ctx.pageNumbers || [])} · ` : selectionLabel;
       if (info.output_mode === 'reconstructed') {
-        el('download-sub').textContent = `Reconstructed PDF · ${s.visible_text_blocks ?? 0} text · ${s.table_blocks ?? 0} tables · ${s.equation_blocks ?? 0} equations · ${s.image_blocks ?? 0} images` +
+        el('download-sub').textContent = partialLabel + `Reconstructed PDF · ${s.visible_text_blocks ?? 0} text · ${s.table_blocks ?? 0} tables · ${s.equation_blocks ?? 0} equations · ${s.image_blocks ?? 0} images` +
           ((s.image_fallback_blocks ?? 0) ? ` · ${s.image_fallback_blocks} visual fallbacks` : '');
       } else {
-        el('download-sub').textContent = `Searchable scan · original pages preserved · ${s.positioned_blocks ?? 0} OCR blocks · ${s.positioned_lines ?? 0} fitted lines` +
+        const policyText = s.existing_text_policy === 'replace'
+          ? `replaced old text on ${s.native_text_replaced_pages ?? 0} page${(s.native_text_replaced_pages ?? 0) === 1 ? '' : 's'}`
+          : `preserved native text on ${s.native_text_preserved_pages ?? 0} page${(s.native_text_preserved_pages ?? 0) === 1 ? '' : 's'}`;
+        el('download-sub').textContent = partialLabel + `Searchable scan · ${policyText} · OCR layer added to ${s.ocr_layer_added_pages ?? 0} pages · ${s.positioned_lines ?? 0} fitted lines` +
+          ((s.flattened_pages ?? 0) ? ` · ${s.flattened_pages} page${s.flattened_pages === 1 ? '' : 's'} rasterized to remove old text` : '') +
           ((s.fallback_blocks ?? 0) ? ` · ${s.fallback_blocks} fallback blocks` : '');
       }
       el('download-card').classList.add('visible');
       el('download-btn').disabled = false;
-      done(outputText, true, info.output_mode);
+      if (ctx.partial) partialDone(ctx, info.output_mode);
+      else done(outputText, true, info.output_mode);
     } finally {
+      currentPhase = ctx?.partial ? 'stopped' : 'idle';
       isBuildingPDF = false;
       setOutputOptionsEnabled(isPDF && !isRunning);
     }
@@ -932,6 +1301,15 @@
 
   window.stopOCR = () => {
     stopRequested = true;
+    // For multi-page PDFs, preserve the page currently being OCR'ed. Aborting the
+    // HTTP stream would discard its final detection boxes, so STOP becomes a
+    // graceful page-boundary stop. Other phases can still be aborted immediately.
+    if (isPDF && currentPhase === 'ocr-page') {
+      status('running', `STOP REQUESTED · FINISHING PDF PAGE ${currentPDFPageNumber}/${currentPDFTotalPages} · SELECTED ${currentPDFSelectedPosition}/${currentPDFSelectedTotal}…`);
+      el('stop-btn').disabled = true;
+      toast('Stop requested · current page will finish, then partial results will be saved');
+      return;
+    }
     if (currentAbort) currentAbort.abort();
   };
   window.copyText = async () => {
@@ -946,15 +1324,23 @@
   };
   window.resetAll = () => {
     if (isRunning) stopOCR();
+    fileSelectionToken += 1;
+    if (currentAbort) { try { currentAbort.abort(); } catch (_) {} currentAbort = null; }
     currentFile = null; isPDF = false; outputText = ''; generatedDownloadUrl = null; generatedFilename = null; lastPdfBuildContext = null;
-    generatePDF = false; currentOutputMode = 'searchable_scan';
+    currentPhase = 'idle'; currentPDFPageNumber = 0; currentPDFTotalPages = 0; currentPDFSelectedPosition = 0; currentPDFSelectedTotal = 0; pdfDocumentTotalPages = 0; pageSelectionMode = 'all';
+    generatePDF = false; currentOutputMode = 'searchable_scan'; existingTextPolicy = 'preserve';
+    pdfTextAnalysis = null; uploadedFileInfo = null; uploadPromise = null;
+    el('page-range').value = '';
+    document.querySelector('input[name="page-selection-mode"][value="all"]').checked = true;
     el('generate-pdf').checked = false;
     document.querySelector('input[name="pdf-output-mode"][value="searchable_scan"]').checked = true;
+    document.querySelector('input[name="existing-text-policy"][value="preserve"]').checked = true;
     if (currentObjectUrl) { URL.revokeObjectURL(currentObjectUrl); currentObjectUrl = null; }
     el('file-input').value = '';
     el('drop-zone').style.display = 'flex';
     el('image-preview').style.display = 'none'; el('image-preview').src = '';
     el('pdf-wrap').classList.remove('visible'); el('pdf-preview').src = 'about:blank';
+    el('text-layer-card').classList.remove('visible'); el('page-select').classList.remove('visible');
     el('file-tag').textContent = 'EMPTY'; el('file-name').textContent = '';
     el('start-btn').disabled = true; el('stop-btn').disabled = true; el('copy-btn').disabled = true;
     el('download-btn').disabled = true; el('download-card').classList.remove('visible');
@@ -989,9 +1375,22 @@
     el('output-tag').textContent = 'DONE'; el('copy-btn').disabled = !text;
     el('count-meta').textContent = `${(text || '').length.toLocaleString()} chars`;
   }
-  function stopped() {
-    status('idle', 'STOPPED BY USER'); el('output-tag').textContent = 'STOPPED';
+  function stopped(completedPages=0, totalPages=0, partialAvailable=false) {
+    const suffix = partialAvailable
+      ? ` · ${completedPages}/${totalPages} SELECTED PAGES SAVED · ENABLE GENERATE PDF TO EXPORT PARTIAL`
+      : '';
+    status('idle', 'STOPPED BY USER' + suffix);
+    el('output-tag').textContent = partialAvailable ? `PARTIAL ${completedPages}/${totalPages}` : 'STOPPED';
+    el('copy-btn').disabled = !outputText;
     el('start-btn').disabled = false; el('stop-btn').disabled = true;
+    if (partialAvailable) toast(`${completedPages}/${totalPages} selected pages kept`);
+  }
+  function partialDone(ctx, outputMode=null) {
+    const label = outputMode === 'reconstructed' ? 'PARTIAL RECONSTRUCTED PDF READY' : 'PARTIAL SEARCHABLE SCAN READY';
+    setProgress(Math.max(4, Math.round((ctx.pageCount / Math.max(1, ctx.totalPages)) * 90)));
+    status('done', `STOPPED · ${label} · ${ctx.pageCount}/${ctx.totalPages} SELECTED PAGES`);
+    el('output-tag').textContent = `PARTIAL ${ctx.pageCount}/${ctx.totalPages}`;
+    el('copy-btn').disabled = !outputText;
   }
   function showError(message) {
     status('error', 'ERROR · ' + message); el('output-tag').textContent = 'ERROR';

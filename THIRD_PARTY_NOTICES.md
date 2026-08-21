@@ -42,3 +42,15 @@ This repository contains Pinokio launcher scripts but does not redistribute the 
 ## Python dependencies
 
 Runtime dependencies are installed from their respective package indexes and remain subject to their own licenses. See `app/requirements.txt` for the dependency list.
+
+## KaTeX
+
+The rendered OCR webpage optionally uses **KaTeX 0.18.4** for local TeX/LaTeX math typesetting. Runtime assets are downloaded from the official KaTeX GitHub release during installation and served locally.
+
+Project: https://github.com/KaTeX/KaTeX
+
+License: MIT
+
+Copyright (c) 2013-2020 Khan Academy and other contributors.
+
+The full KaTeX license is written to `app/vendor/katex/LICENSE` when the runtime assets are installed.
